@@ -1,0 +1,20 @@
+# Окружения и секреты
+.env
+*.env
+.venv/
+venv/
+
+# Кэш и артефакты
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+dist/
+build/
+*.log
+
+# Редакторы и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
