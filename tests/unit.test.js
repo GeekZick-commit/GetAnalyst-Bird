@@ -616,10 +616,11 @@ group('background & audio');
 test('parallax layers scroll and stay ordered', function () {
   var bg = new Background.ParallaxBackground();
   bg.update(1, 300);
-  assert(bg.offsets.tufts > bg.offsets.trees, 'near layers move faster');
-  assert(bg.offsets.trees > bg.offsets.hillsNear, 'mid layers move faster than far ones');
+  assert(bg.offsets.foreground > bg.offsets.hillsNear, 'near layers move faster');
   assert(bg.offsets.hillsNear > bg.offsets.clouds, 'clouds are the slowest');
-  assert(bg.clouds.length > 0 && bg.trees.length > 0);
+  assert(bg.clouds.length > 0 && bg.trees.length > 0 && bg.tufts.length > 0 && bg.hillsFar.length > 0,
+    'every layer still has content');
+  bg.draw(null); // no DOM: must be a no-op, never a crash
 });
 
 test('AudioManager degrades gracefully without Web Audio', function () {

@@ -17,7 +17,7 @@
 
   var IDS = [
     'stage', 'hud', 'hud-portrait', 'hud-bird', 'hud-nick', 'hud-score', 'hud-best', 'hud-combo',
-    'hud-lives', 'btn-pause', 'btn-sound', 'combo-banner',
+    'hud-lives', 'btn-pause', 'btn-sound', 'combo-banner', 'ready-hint', 'perf-hud',
     'screen-menu', 'screen-select', 'screen-pause', 'screen-gameover',
     'nickname', 'nickname-hint', 'btn-play', 'leaderboard-menu', 'btn-clear-menu',
     'toggle-music', 'toggle-sfx', 'toggle-music-pause', 'toggle-sfx-pause',
@@ -256,6 +256,27 @@
     banner.classList.remove('is-showing');
     void banner.offsetWidth;
     banner.classList.add('is-showing');
+  };
+
+  UIManager.prototype.setReadyHint = function (visible, nickname) {
+    var el = this.el['ready-hint'];
+    if (!el) { return; }
+    el.classList.toggle('is-visible', !!visible);
+    var text = el.querySelector('.ready-hint__text');
+    if (text && visible) {
+      text.innerHTML = '<b>SPACE</b> · <b>TAP</b> · <b>CLICK</b> — to start flying';
+    }
+    void nickname;
+  };
+
+  UIManager.prototype.setPerfVisible = function (visible) {
+    var el = this.el['perf-hud'];
+    if (el) { el.classList.toggle('is-visible', !!visible); }
+  };
+
+  UIManager.prototype.setPerfText = function (text) {
+    var el = this.el['perf-hud'];
+    if (el) { el.textContent = text || ''; }
   };
 
   UIManager.prototype.toast = function (message, ms) {

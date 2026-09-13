@@ -147,11 +147,20 @@ async function main() {
     await sleep(700);
     await shot('02-select.png');
 
-    // 3. gameplay — autopilot so the frame shows a real run
+    // 3. ready gate: the run waits for the first flap
     await evaluate(`(function(){
       var g = ${G};
       g.menuSelector.select('cyber', { silent: true });
       document.getElementById('btn-play').click();
+      return true;
+    })()`);
+    await sleep(1000);
+    await shot('03-ready.png');
+
+    // 4. gameplay — autopilot so the frame shows a real run
+    await evaluate(`(function(){
+      var g = ${G};
+      if (g.ready) { g.beginRun(); }
       window.__autopilot = setInterval(function(){
         if (g.state !== 'PLAYING') { return; }
         var target = null;
@@ -164,15 +173,15 @@ async function main() {
       return true;
     })()`);
     await sleep(4200);
-    await shot('03-gameplay.png');
+    await shot('04-gameplay.png');
 
-    // 4. pause overlay
+    // 5. pause overlay
     await evaluate(`(function(){ ${G}.togglePause(); return true; })()`);
     await sleep(600);
-    await shot('04-pause.png');
+    await shot('05-pause.png');
     await evaluate(`(function(){ ${G}.togglePause(); return true; })()`);
 
-    // 5. game over with a new high score + confetti
+    // 6. game over with a new high score + confetti
     await evaluate(`(function(){
       var g = ${G};
       clearInterval(window.__autopilot);
@@ -186,9 +195,9 @@ async function main() {
       return true;
     })()`);
     await sleep(700);
-    await shot('05-gameover.png');
+    await shot('06-gameover.png');
 
-    // 6. mid-game close-up of the three characters (menu cards)
+    // 7. menu after the run
     await evaluate(`(function(){
       var g = ${G};
       g.enterMenu();
@@ -196,7 +205,7 @@ async function main() {
       return true;
     })()`);
     await sleep(900);
-    await shot('06-menu-cards.png');
+    await shot('07-menu.png');
   } finally {
     if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
     chrome.kill('SIGKILL');

@@ -533,6 +533,69 @@ body {
   100% { opacity: 0; transform: translate(-50%, -62%) scale(1); }
 }
 
+/* ============================ Ready gate & perf HUD ============================ */
+
+.ready-hint {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  display: none;
+  pointer-events: none;
+}
+.ready-hint.is-visible { display: block; animation: readyIn 0.35s cubic-bezier(0.2, 1.3, 0.4, 1); }
+
+@keyframes readyIn {
+  0% { opacity: 0; transform: translate(-50%, -60%) scale(0.85); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+.ready-hint__title {
+  display: block;
+  font-size: calc(var(--u) * 42);
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  color: var(--ga-accent);
+  text-shadow: 0 0 calc(var(--u) * 30) rgba(22, 243, 206, 0.55);
+  animation: readyPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes readyPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+
+.ready-hint__text {
+  display: block;
+  margin-top: calc(var(--u) * 8);
+  font-size: calc(var(--u) * 13);
+  letter-spacing: 0.14em;
+  color: var(--ga-text);
+  text-shadow: 0 calc(var(--u) * 2) calc(var(--u) * 10) rgba(0, 0, 0, 0.6);
+}
+.ready-hint__text b { color: var(--ga-accent); }
+
+.perf-hud {
+  position: absolute;
+  left: calc(var(--u) * 14);
+  bottom: calc(var(--u) * 12);
+  z-index: 7;
+  display: none;
+  padding: calc(var(--u) * 5) calc(var(--u) * 9);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: calc(var(--u) * 11);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ga-accent);
+  background: rgba(6, 12, 13, 0.72);
+  border: 1px solid rgba(22, 243, 206, 0.28);
+  border-radius: calc(var(--u) * 8);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.perf-hud.is-visible { display: block; }
+
 /* ============================ Game over ============================ */
 
 .high-score {

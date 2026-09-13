@@ -15,6 +15,27 @@
   var MAX_PARTICLES = 280;
   var randRange = Utils.randRange;
 
+  // One soft radial sprite per colour, blitted for glow particles.
+  // ctx.shadowBlur per particle was a major frame-time cost.
+  var SOFT = {};
+  function softSprite(color) {
+    if (color in SOFT) { return SOFT[color]; }
+    if (typeof document === 'undefined') { SOFT[color] = null; return null; }
+    var size = 64;
+    var canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    var g = canvas.getContext('2d');
+    var grad = g.createRadialGradient(size / 2, size / 2, 1, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, color);
+    grad.addColorStop(0.25, color);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    SOFT[color] = canvas;
+    return canvas;
+  }
+
   function ParticleSystem(options) {
     options = options || {};
     this.max = options.max || MAX_PARTICLES;
@@ -164,9 +185,14 @@
       alpha = Math.max(0, Math.min(1, alpha));
       ctx.save();
       ctx.globalAlpha = alpha;
-      if (p.glow) {
-        ctx.shadowColor = p.color;
-        ctx.shadowBlur = p.size * 1.6;
+      if (p.glow && p.kind !== 'text') {
+        var sprite = softSprite(p.color);
+        if (sprite) {
+          var halo = p.size * (p.kind === 'trail' ? 5.5 : 4.2) * (1 - t * 0.4);
+          ctx.globalAlpha = alpha * 0.5;
+          ctx.drawImage(sprite, p.x - halo / 2, p.y - halo / 2, halo, halo);
+          ctx.globalAlpha = alpha;
+        }
       }
       ctx.fillStyle = p.color;
       ctx.strokeStyle = p.color;
@@ -193,6 +219,8 @@
         ctx.rotate(p.angle || 0);
         ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
       } else if (p.kind === 'text') {
+        // no shadowBlur here: a blurred glyph raster is one of the most
+        // expensive things canvas can do, and score pops appear constantly
         ctx.font = '800 ' + Math.round(p.size) + 'px Montserrat, system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';

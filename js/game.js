@@ -20,7 +20,9 @@
   var BIRDS = Config.BIRDS;
 
   var STATES = { MENU: 'MENU', CHARACTER_SELECT: 'CHARACTER_SELECT', PLAYING: 'PLAYING', PAUSED: 'PAUSED', GAME_OVER: 'GAME_OVER' };
-  var MAX_DT = 1 / 20; // never simulate more than 50 ms in one step
+  var MAX_DT = 1 / 20;           // never simulate more than 50 ms in one step
+  var MAX_BACKING_PIXELS = 1.6e6; // canvas budget: keeps HiDPI screens smooth
+  var DIFF_REFRESH = 0.2;         // seconds between difficulty target recalculations
 
   function Game(options) {
     options = options || {};
@@ -82,6 +84,7 @@
       onFlap: this.onFlap.bind(this),
       onPause: this.onPauseToggle.bind(this),
       onToggleSound: this.onToggleMute.bind(this),
+      onTogglePerf: this.togglePerf.bind(this),
       onAnyGesture: this.onGesture.bind(this),
       onBlur: this.onWindowBlur.bind(this),
       shouldIgnore: this.shouldIgnoreInput.bind(this)
@@ -98,10 +101,19 @@
     this.hud = { score: -1, best: -1, multiplier: -1, lives: -1, nickname: '', birdName: '' };
     this.confettiTimer = 0;
     this.trailTimer = 0;
-    this.HUD_PORTRAIT_EVERY = 0.1;
+    this.HUD_PORTRAIT_EVERY = 0.5;
     this.portraitTimer = 0;
     this.fps = 0;
-    this._lastFrameForFps = 0;
+    this.ready = false;
+    this.readyTime = 0;
+    this.showPerf = false;
+    this._perfTimer = 0;
+    this._forceRender = true;
+    this._birdOpts = { groundY: WORLD.groundY };
+    this._picked = [];
+    this._target = this.snapDifficulty(0);
+    this._diffTimer = 0;
+    this._lastScore = -1;
 
     this.installGlobalErrorHandlers();
     this.resize();
@@ -230,8 +242,15 @@
     if (dt > 0) { this.fps = 1 / dt; }
 
     try {
-      this.update(dt);
-      this.render();
+      if (this.state === STATES.PAUSED && !this._forceRender) {
+        // Nothing moves while paused: skip the whole pipeline instead of
+        // burning a full frame render behind a static overlay.
+      } else {
+        this.update(dt);
+        this.render();
+        this._forceRender = false;
+      }
+      this.updatePerfOverlay(dt);
       if (this.errorCount > 0 && this.errorCount <= 3) { this.errorCount = 0; }
     } catch (err) {
       this.errorCount += 1;
@@ -253,10 +272,17 @@
     var cssW = rect && rect.width ? rect.width : WORLD.width;
     var cssH = rect && rect.height ? rect.height : WORLD.height;
     var dpr = Utils.clamp(this.win.devicePixelRatio || 1, 1, 2);
+    // On HiDPI displays a 16:9 canvas can easily reach 4M pixels, which is where
+    // frame times explode. Keep the backing store inside a fixed pixel budget.
+    var pixels = cssW * cssH * dpr * dpr;
+    if (pixels > MAX_BACKING_PIXELS) {
+      dpr = Math.max(0.75, Math.sqrt(MAX_BACKING_PIXELS / (cssW * cssH)));
+    }
 
     canvas.width = Math.max(1, Math.round(cssW * dpr));
     canvas.height = Math.max(1, Math.round(cssH * dpr));
     this.scale = canvas.width / WORLD.width;
+    this._forceRender = true;
 
     if (stage && stage.style && cssW > 0) {
       stage.style.setProperty('--u', (cssW / 1000) + 'px');
@@ -277,6 +303,7 @@
     this.bird.reset();
     this.diff = this.snapDifficulty(0);
     this.background.reset();
+    this.ui.setReadyHint(false);
     this.ui.setHudActive(false);
     this.ui.showScreen('menu');
     this.ui.setLives(LIVES.start);
@@ -336,9 +363,12 @@
 
     this.stopSelectors();
     this.state = STATES.PLAYING;
+    this.ready = true;
+    this.readyTime = 0;
     this.ui.showScreen(null);
     this.ui.setNicknameError(null);
     this.ui.setHudActive(true);
+    this.ui.setReadyHint(true, check.value);
     this.ui.setLives(LIVES.start);
     this.ui.updateHud({
       score: 0,
@@ -348,15 +378,32 @@
       nickname: check.value
     });
 
+    // The bird hovers in place until the player takes the first flap.
+    this.bird.y = WORLD.height * 0.42;
+    this.bird.vy = 0;
+    this.audio.unlock();
+    this.audio.setIntensity(1);
+    this._forceRender = true;
+    return true;
+  };
+
+  /** First flap: the level really starts here. */
+  Game.prototype.beginRun = function () {
+    if (!this.ready) { return false; }
+    this.ready = false;
+    this.ui.setReadyHint(false);
+
     // First passage a full screen away: the player always gets time to react.
+    this.obstacles.reset();
+    this.worms.reset();
     var pair = this.obstacles.createPair(WORLD.width + 120, this.diff, null);
     this.obstacles.pairs.push(pair);
     this.worms.populatePassage(pair, this.diff);
 
+    this.bird.flap();
     this.audio.unlock();
-    this.audio.setIntensity(this.diff.level);
-    this.audio.startMusic();
-    this.ui.toast('Flap to fly — good luck, ' + check.value + '!');
+    this.audio.play('flap');
+    if (this.audio.settings.music) { this.audio.startMusic(); }
     return true;
   };
 
@@ -404,6 +451,7 @@
     if (result.saved) { this.best = Math.max(this.best, this.score.score); }
     this.score.best = this.best;
 
+    this.ui.setReadyHint(false);
     this.ui.setHudActive(false);
     this.ui.fillGameOver({
       title: 'GAME OVER',
@@ -451,6 +499,7 @@
 
   Game.prototype.onFlap = function () {
     if (this.state !== STATES.PLAYING) { return; }
+    if (this.ready) { this.beginRun(); return; }
     if (!this.bird.flap()) { return; }
     this.audio.unlock();
     this.audio.play('flap');
@@ -553,22 +602,42 @@
     }
   };
 
+  Game.prototype.updateReady = function (dt) {
+    // Warm-up scene: the world drifts slowly while the player gets ready.
+    this.background.update(dt, 90);
+    this.bird.updateIdle(dt, WORLD.height * 0.42, this.time);
+    this.portraitTimer -= dt;
+    if (this.portraitTimer <= 0) {
+      this.ui.renderPortrait(this.birdDef, this.time);
+      this.portraitTimer = this.HUD_PORTRAIT_EVERY;
+    }
+  };
+
   Game.prototype.updatePlaying = function (dt) {
-    var level = this.score.difficulty();
-    var target = this.snapDifficulty(this.score.score);
+    if (this.ready) { this.updateReady(dt); return; }
+
+    // Difficulty targets are recomputed a few times per second, not per frame.
+    this._diffTimer -= dt;
+    if (this._diffTimer <= 0 || this._lastScore !== this.score.score) {
+      this._target = this.snapDifficulty(this.score.score);
+      this._lastScore = this.score.score;
+      this._diffTimer = DIFF_REFRESH;
+    }
+    var target = this._target;
+
     // Smooth, gradual difficulty growth.
     this.diff.speed = Utils.approach(this.diff.speed, target.speed, 0.55, dt);
     this.diff.gap = Utils.approach(this.diff.gap, target.gap, 0.45, dt);
     this.diff.interval = Utils.approach(this.diff.interval, target.interval, 0.45, dt);
     this.diff.centerDrift = Utils.approach(this.diff.centerDrift, target.centerDrift, 0.45, dt);
     this.diff.wormChance = target.wormChance;
-    this.diff.level = level.level;
+    this.diff.level = target.level;
 
-    this.audio.setIntensity(level.level);
+    this.audio.setIntensity(target.level);
 
     // world
     this.background.update(dt, this.diff.speed);
-    var flags = this.bird.update(dt, { groundY: WORLD.groundY });
+    var flags = this.bird.update(dt, this._birdOpts);
     var result = this.obstacles.update(dt, this.diff, { birdX: this.bird.x });
     for (var i = 0; i < result.spawned.length; i++) {
       this.worms.populatePassage(result.spawned[i], this.diff);
@@ -597,7 +666,7 @@
   };
 
   Game.prototype.collectWorms = function () {
-    var picked = this.worms.collect(this.bird);
+    var picked = this.worms.collect(this.bird, this._picked);
     if (!picked.length) { return; }
     var multiplierUp = false;
     var lastMultiplier = this.score.multiplier;
@@ -680,6 +749,24 @@
     }
   };
 
+  Game.prototype.togglePerf = function () {
+    this.showPerf = !this.showPerf;
+    this.ui.setPerfVisible(this.showPerf);
+    if (!this.showPerf) { this.ui.setPerfText(''); }
+    return this.showPerf;
+  };
+
+  Game.prototype.updatePerfOverlay = function (dt) {
+    if (!this.showPerf) { return; }
+    this._perfTimer -= dt;
+    if (this._perfTimer > 0) { return; }
+    this._perfTimer = 0.25;
+    this.ui.setPerfText(
+      Math.round(this.fps) + ' FPS · ' + this.particles.count() + ' fx · ' +
+      this.worms.count() + ' worms · ' + this.obstacles.count() + ' walls'
+    );
+  };
+
   Game.prototype.updateHudDom = function (force) {
     var hud = this.hud;
     var score = this.score.score;
@@ -710,15 +797,11 @@
     var ctx = this.ctx;
     var scale = this.scale || 1;
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
-    ctx.clearRect(0, 0, WORLD.width, WORLD.height);
 
-    var dim = 0;
-    if (this.state === STATES.MENU) { dim = 0.30; }
-    else if (this.state === STATES.CHARACTER_SELECT) { dim = 0.40; }
-    else if (this.state === STATES.PAUSED) { dim = 0.45; }
-    else if (this.state === STATES.GAME_OVER) { dim = 0.18; }
-
-    this.background.draw(ctx, { dim: dim });
+    // No clearRect here: the opaque backdrop is blitted with 'copy', which
+    // replaces the frame in a single pass. The DOM overlays darken the world
+    // themselves, so the canvas never pays for an extra alpha blend either.
+    this.background.draw(ctx);
 
     if (this.state === STATES.PLAYING || this.state === STATES.PAUSED || this.state === STATES.GAME_OVER) {
       this.obstacles.draw(ctx, this.time);

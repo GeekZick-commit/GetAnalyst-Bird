@@ -53,6 +53,10 @@
         </div>
       </div>
       <div class="combo-banner" id="combo-banner" aria-live="polite"></div>
+      <div class="ready-hint" id="ready-hint">
+        <span class="ready-hint__title">GET READY</span>
+        <span class="ready-hint__text"><b>SPACE</b> · <b>TAP</b> · <b>CLICK</b> — to start flying</span>
+      </div>
     </div>
 
     <!-- ============ MAIN MENU ============ -->
@@ -86,7 +90,7 @@
             <div class="bird-cards" id="bird-cards-menu" role="radiogroup" aria-label="Choose your bird"></div>
 
             <button class="btn btn--primary btn--play" id="btn-play" type="button">PLAY</button>
-            <p class="controls-hint"><b>SPACE</b> / <b>↑</b> / <b>CLICK</b> flap &nbsp;·&nbsp; <b>P</b> pause</p>
+            <p class="controls-hint"><b>SPACE</b> / <b>↑</b> / <b>CLICK</b> flap &nbsp;·&nbsp; <b>P</b> pause &nbsp;·&nbsp; <b>M</b> sound &nbsp;·&nbsp; <b>F</b> fps</p>
           </div>
 
           <aside class="panel__col panel__col--scores">
@@ -156,6 +160,7 @@
     </section>
 
     <!-- ============ FLOATING LAYERS ============ -->
+    <div class="perf-hud" id="perf-hud" aria-hidden="true"></div>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <div class="rotate-hint" id="rotate-hint">↻ Rotate your device for a bigger view</div>
 

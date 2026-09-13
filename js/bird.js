@@ -154,14 +154,14 @@
       ctx.beginPath();
       ctx.ellipse(ex + 1, ey, 6.4, 5.2, -0.12, 0, TAU);
       ctx.fill();
-      ctx.save();
-      ctx.shadowColor = def.glow || def.accent;
-      ctx.shadowBlur = 12;
       ctx.fillStyle = def.accent;
       ctx.beginPath();
-      ctx.ellipse(ex + 2.2, ey - 0.2, 2.6, 3.4, -0.12, 0, TAU);
+      ctx.ellipse(ex + 2.2, ey - 0.2, 2.9, 3.7, -0.12, 0, TAU);
       ctx.fill();
-      ctx.restore();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.beginPath();
+      ctx.ellipse(ex + 1.4, ey - 1.6, 1.1, 1.4, -0.12, 0, TAU);
+      ctx.fill();
     } else {
       ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();

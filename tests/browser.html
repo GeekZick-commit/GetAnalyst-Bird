@@ -126,6 +126,56 @@
     return pair;
   }
 
+  /** Renders a sound into an OfflineAudioContext and reports its envelope. */
+  async function measureSound(method) {
+    var OAC = win.OfflineAudioContext || win.webkitOfflineAudioContext;
+    var am = g.audio;
+    if (!OAC || !am) { return { skipped: true }; }
+    var off = new OAC(1, 44100, 44100);
+    var dest = off.createGain();
+    dest.gain.value = 1;
+    dest.connect(off.destination);
+    var realCtx = am.ctx;
+    var realSfx = am.sfxGain;
+    am.ctx = off;
+    am.sfxGain = dest;
+    var threw = null;
+    try { am[method](); } catch (err) { threw = String(err && err.message); }
+    am.ctx = realCtx;
+    am.sfxGain = realSfx;
+    var buffer = await off.startRendering();
+    var data = buffer.getChannelData(0);
+    var peak = 0, sum = 0, last = 0;
+    for (var i = 0; i < data.length; i++) {
+      var v = Math.abs(data[i]);
+      if (v > peak) { peak = v; }
+      sum += v * v;
+      if (v > 0.002) { last = i; }
+    }
+    return { peak: peak, rms: Math.sqrt(sum / data.length), durationMs: last / 44.1, error: threw };
+  }
+
+  /** Measures real update+render cost with forced rasterisation. */
+  async function measureFrames(count) {
+    var n = count || 120;
+    var ctx = g.ctx;
+    g.lives = 99;
+    g.bird.invulnerable = 999;
+    var flush = function () { ctx.getImageData(0, 0, 1, 1); };
+    for (var w = 0; w < 10; w++) { g.time += 1 / 60; g.update(1 / 60); g.render(); flush(); }
+    var t0 = win.performance.now();
+    for (var i = 0; i < n; i++) {
+      g.time += 1 / 60;
+      g.update(1 / 60);
+      g.render();
+      flush();
+    }
+    var ms = (win.performance.now() - t0) / n;
+    g.lives = 3;
+    g.bird.invulnerable = 0;
+    return { msPerFrame: ms };
+  }
+
   async function run() {
     progress('run() entered');
     // Keep the generated soundtrack off: virtual time would fast-forward it.
@@ -190,6 +240,18 @@
     click('btn-play');
     await frames(3);
     checkEqual('PLAY starts the game', g.state, 'PLAYING');
+    check('the run waits in the ready state', g.ready === true);
+    check('the ready hint is visible', doc.getElementById('ready-hint').classList.contains('is-visible'));
+    var readyY = g.bird.y;
+    var readyDistance = g.score.distance;
+    await frames(45);
+    check('the bird hovers instead of free-falling while ready', Math.abs(g.bird.y - readyY) < 30,
+      'y ' + readyY.toFixed(1) + ' -> ' + g.bird.y.toFixed(1));
+    check('the world does not scroll while ready', g.score.distance === readyDistance);
+    key('Space');
+    await frames(3);
+    check('the first flap starts the run', g.ready === false);
+    check('the ready hint disappears', !doc.getElementById('ready-hint').classList.contains('is-visible'));
     checkEqual('score starts at zero', g.score.score, 0);
     checkEqual('three lives at the start', g.lives, 3);
     check('HUD is visible in game', doc.getElementById('hud').classList.contains('is-active'));
@@ -314,6 +376,12 @@
     check('gap shrinks but never below the minimum', g.diff.gap >= GA.OBSTACLE.minGap - 1, 'gap ' + g.diff.gap.toFixed(0));
 
     progress('difficulty done');
+    /* ---------------- frame budget ---------------- */
+    var budget = await measureFrames(120);
+    check('a gameplay frame stays inside the frame budget', budget.msPerFrame < 14,
+      budget.msPerFrame.toFixed(2) + ' ms/frame (forced rasterisation, software renderer)');
+    note('measured frame cost', budget.msPerFrame.toFixed(2) + ' ms');
+
     /* ---------------- pause ---------------- */
     key('KeyP');
     await frames(2);
@@ -376,6 +444,10 @@
     checkEqual('combo reset', g.score.combo, 0);
     checkEqual('no grey hearts after restart', doc.querySelectorAll('#hud-lives .life.is-lost').length, 0);
     check('nickname kept after restart', g.ui.getNickname() === 'Zig');
+    check('a restarted run waits for the first flap again', g.ready === true);
+    key('Space');
+    await frames(3);
+    check('the restarted run is live', g.ready === false);
 
     progress('play again done');
     /* ---------------- change bird ---------------- */
@@ -469,6 +541,55 @@
       note('AudioContext state', g.audio.ctx.state);
     } else {
       note('Web Audio unavailable in this runner', 'skipped');
+    }
+
+    /* ---------------- generated (pre-rendered) soundtrack ---------------- */
+    g.audio.unlock();
+    await waitFor(function () { return g.audio._loopsBaked || g.audio._loopFailed; }, 25000, 'offline music render');
+    check('the soundtrack is pre-rendered offline', g.audio._loopsBaked === true, 'loopFailed=' + g.audio._loopFailed);
+    if (g.audio._loopsBaked) {
+      check('both intensity variants exist', !!g.audio._loops.calm && !!g.audio._loops.full);
+      check('the loop is a full 4-bar phrase', g.audio._loops.calm.duration > 9, 'duration=' + g.audio._loops.calm.duration.toFixed(2) + 's');
+      g.applySoundSettings({ music: true, sfx: true });
+      g.audio.setIntensity(5);
+      g.audio.startMusic();
+      await sleep(700);
+      check('looping sources are running', !!g.audio._loopNodes);
+      check('no live scheduler is needed any more', !g.audio._timer);
+      var analyser = g.audio.ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      g.audio.master.connect(analyser);
+      var samples = new Float32Array(analyser.fftSize);
+      var musicPeak = 0, musicRms = 0;
+      for (var poll = 0; poll < 14; poll++) {
+        await sleep(100);
+        analyser.getFloatTimeDomainData(samples);
+        var energy = 0;
+        for (var si = 0; si < samples.length; si++) {
+          energy += samples[si] * samples[si];
+          var abs = Math.abs(samples[si]);
+          if (abs > musicPeak) { musicPeak = abs; }
+        }
+        var rms = Math.sqrt(energy / samples.length);
+        if (rms > musicRms) { musicRms = rms; }
+      }
+      check('the music is actually audible', musicPeak > 0.01,
+        'peak=' + musicPeak.toFixed(4) + ' rms=' + musicRms.toFixed(5));
+      note('music level', 'peak ' + musicPeak.toFixed(4) + ', rms ' + musicRms.toFixed(5));
+      g.audio.stopMusic();
+      check('music stops cleanly', !g.audio._loopNodes && g.audio.isMusicPlaying() === false);
+    }
+
+    /* ---------------- the flap is a tiny fart ---------------- */
+    var fart = await measureSound('_fart');
+    if (fart.skipped) {
+      note('offline audio unavailable, fart not measured', 'skipped');
+    } else {
+      check('the flap sound synthesises without errors', !fart.error, 'error=' + fart.error);
+      check('the flap sound has body', fart.peak > 0.05, 'peak=' + fart.peak.toFixed(3));
+      check('the flap sound is short (a small creature)', fart.durationMs > 30 && fart.durationMs < 260,
+        'length=' + fart.durationMs.toFixed(0) + 'ms');
+      check('the flap sound is not a bare click', fart.rms > 0.004, 'rms=' + fart.rms.toFixed(4));
     }
 
     click('btn-sound');

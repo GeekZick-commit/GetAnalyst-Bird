@@ -17,6 +17,27 @@
   var WORMS = Config.WORMS;
   var TAU = Utils.TAU;
 
+  // Soft glow sprites are rendered once per colour and blitted afterwards:
+  // ctx.shadowBlur per segment was the single most expensive thing on screen.
+  var GLOW = {};
+  function glowSprite(color) {
+    if (color in GLOW) { return GLOW[color]; }
+    if (typeof document === 'undefined') { GLOW[color] = null; return null; }
+    var size = 128;
+    var canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    var g = canvas.getContext('2d');
+    var grad = g.createRadialGradient(size / 2, size / 2, 1, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, color);
+    grad.addColorStop(0.28, color);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    GLOW[color] = canvas;
+    return canvas;
+  }
+
   function typeById(id) {
     for (var i = 0; i < WORMS.types.length; i++) {
       if (WORMS.types[i].id === id) { return WORMS.types[i]; }
@@ -80,18 +101,15 @@
     ctx.rotate(Math.sin(this.angle) * 0.22);
 
     if (t.id === 'gold') {
-      var halo = ctx.createRadialGradient(0, 0, 1, 0, 0, r * 3.1);
-      halo.addColorStop(0, 'rgba(255, 233, 168, 0.75)');
-      halo.addColorStop(0.5, 'rgba(255, 209, 102, 0.28)');
-      halo.addColorStop(1, 'rgba(255, 209, 102, 0)');
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(0, 0, r * 3.1, 0, TAU);
-      ctx.fill();
+      var sprite = glowSprite(t.glow);
+      if (sprite) {
+        var pulse = 1 + Math.sin(time * 3 + this.phase) * 0.08;
+        var halo = r * 6.2 * pulse;
+        ctx.globalAlpha = 0.75;
+        ctx.drawImage(sprite, -halo / 2, -halo / 2, halo, halo);
+        ctx.globalAlpha = 1;
+      }
     }
-
-    ctx.shadowColor = t.glow;
-    ctx.shadowBlur = t.id === 'gold' ? 20 : 8;
 
     // body: a small stack of segments curled into an arc
     for (var i = this.segments - 1; i >= 0; i--) {
@@ -240,9 +258,13 @@
     }
   };
 
-  /** Collects every worm touched this frame (supports simultaneous pickups). */
-  WormManager.prototype.collect = function (bird) {
-    var collected = [];
+  /**
+   * Collects every worm touched this frame (supports simultaneous pickups).
+   * Results are written into a reusable array so the hot path allocates nothing.
+   */
+  WormManager.prototype.collect = function (bird, out) {
+    var collected = out || this._collected || (this._collected = []);
+    collected.length = 0;
     for (var i = this.items.length - 1; i >= 0; i--) {
       var w = this.items[i];
       if (w.collected) { continue; }

@@ -47,6 +47,12 @@
     this._nextTime = 0;
     this._bpm = 98;
     this._lastError = null;
+    // pre-rendered music loops (see _renderMusicLoops)
+    this._loops = { calm: null, full: null };
+    this._loopsBaked = false;
+    this._loopBuilding = false;
+    this._loopFailed = false;
+    this._loopNodes = null;
   }
 
   /* ------------------------- infrastructure ------------------------- */
@@ -61,7 +67,7 @@
       master.connect(ctx.destination);
 
       var music = ctx.createGain();
-      music.gain.value = this.settings.music ? 0.16 : 0;
+      music.gain.value = this.settings.music ? 0.20 : 0;
       music.connect(master);
 
       var sfx = ctx.createGain();
@@ -103,6 +109,8 @@
         if (p && typeof p.then === 'function') { p.then(function () {}, function () {}); }
       }
       this.unlocked = true;
+      // Render the soundtrack in the background while the player is in the menu.
+      this._renderMusicLoops();
     } catch (err) {
       this._fail(err);
     }
@@ -114,7 +122,7 @@
       music: settings.music !== false,
       sfx: settings.sfx !== false
     };
-    if (this.musicGain) { this.musicGain.gain.value = this.settings.music ? 0.16 : 0; }
+    if (this.musicGain) { this.musicGain.gain.value = this.settings.music ? 0.20 : 0; }
     if (this.sfxGain) { this.sfxGain.gain.value = this.settings.sfx ? 0.5 : 0; }
     if (!this.settings.music) { this.stopMusic(); }
     return this.settings;
@@ -122,7 +130,8 @@
 
   AudioManager.prototype.setIntensity = function (level) {
     this.intensity = Utils.clamp(level || 1, 1, 6);
-    this._bpm = 98 + (this.intensity - 1) * 4.5; // subtle acceleration with difficulty
+    this._bpm = BASE_BPM + (this.intensity - 1) * 4.5; // subtle acceleration with difficulty
+    this._applyLoopMix(false);
   };
 
   AudioManager.prototype.isMusicPlaying = function () { return this.musicOn; };
@@ -215,13 +224,79 @@
     }
   };
 
+  /**
+   * Tiny-creature fart used for the flap.
+   * Two detuned sawtooth oscillators run through a falling lowpass while a
+   * square LFO wobbles the gain (the rasp), with a very short 90-140 ms
+   * envelope and a tiny band-passed noise "pff" on the attack.
+   * Pitch and length are randomised so repeated flaps never sound identical.
+   */
+  AudioManager.prototype._fart = function () {
+    var ctx = this.ctx;
+    if (!ctx) { return; }
+    try {
+      var t0 = ctx.currentTime;
+      var dur = 0.085 + Math.random() * 0.055;
+      var base = 168 + Math.random() * 92;
+
+      var env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, t0);
+      env.gain.exponentialRampToValueAtTime(0.40, t0 + 0.012);
+      env.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      env.connect(this.sfxGain);
+
+      var trem = ctx.createGain();
+      trem.gain.setValueAtTime(0.62, t0);
+      trem.gain.setValueAtTime(0.62, t0 + dur);
+      trem.connect(env);
+
+      var lfo = ctx.createOscillator();
+      lfo.type = 'square';
+      lfo.frequency.setValueAtTime(28 + Math.random() * 20, t0);
+      lfo.frequency.linearRampToValueAtTime(58 + Math.random() * 30, t0 + dur);
+      var lfoDepth = ctx.createGain();
+      lfoDepth.gain.setValueAtTime(0.34, t0);
+      lfoDepth.gain.exponentialRampToValueAtTime(0.06, t0 + dur);
+      lfo.connect(lfoDepth);
+      lfoDepth.connect(trem.gain);
+      lfo.start(t0);
+      lfo.stop(t0 + dur + 0.02);
+
+      var filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.Q.value = 7;
+      filter.frequency.setValueAtTime(1500, t0);
+      filter.frequency.exponentialRampToValueAtTime(340, t0 + dur);
+      filter.connect(trem);
+
+      var osc1 = ctx.createOscillator();
+      osc1.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(base, t0);
+      osc1.frequency.exponentialRampToValueAtTime(base * 0.52, t0 + dur);
+
+      var osc2 = ctx.createOscillator();
+      osc2.type = 'sawtooth';
+      osc2.frequency.setValueAtTime(base * 1.045, t0);
+      osc2.frequency.exponentialRampToValueAtTime(base * 0.5, t0 + dur);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      osc1.start(t0);
+      osc1.stop(t0 + dur + 0.02);
+      osc2.start(t0);
+      osc2.stop(t0 + dur + 0.02);
+
+      this._noise({ t0: t0, dur: 0.05, filter: 'bandpass', freq: 1100, q: 1.1, gain: 0.10 });
+    } catch (err) {
+      this._fail(err);
+    }
+  };
+
   /* ------------------------- SFX library ------------------------- */
 
   var SFX = {
-    flap: function (a) {
-      a._noise({ dur: 0.09, filter: 'highpass', freq: 700, gain: 0.14 });
-      a._tone({ freq: 520, glideTo: 300, type: 'triangle', dur: 0.11, gain: 0.16 });
-    },
+    // the flap is deliberately a short, small fart (see _fart)
+    flap: function (a) { a._fart(); },
     worm_green: function (a) { a._seq([NOTES.E5, NOTES.G5], { step: 0.055, dur: 0.12, gain: 0.2 }); },
     worm_blue: function (a) { a._seq([NOTES.G4, NOTES.B4, NOTES.E5], { step: 0.05, dur: 0.13, gain: 0.22, type: 'sine' }); },
     worm_purple: function (a) { a._seq([NOTES.A4, NOTES.C5, NOTES.E5, NOTES.A5], { step: 0.048, dur: 0.15, gain: 0.24, type: 'sine' }); },
@@ -278,88 +353,301 @@
     }
   };
 
-  /* ------------------------- music ------------------------- */
+  /* ------------------------- music -------------------------
+     The soundtrack is rendered once into looping AudioBuffers with an
+     OfflineAudioContext (two intensity variants that are cross-faded), so
+     playback costs exactly two AudioBufferSources and no scheduler at all.
+     A live scheduler remains as a fallback when offline rendering is missing.
+     --------------------------------------------------------- */
 
-  AudioManager.prototype.startMusic = function () {
-    if (!this.available || !this.settings.music) { return; }
-    var ctx = this.ensureContext();
-    if (!ctx) { return; }
-    this.musicOn = true;
-    if (this._timer) { return; }
-    this._step = 0;
-    this._nextTime = ctx.currentTime + 0.08;
+  var BASE_BPM = 98;
+  var MUSIC_BARS = 4;
+  var STEPS_PER_BAR = 16;
+
+  function createNoiseBuffer(ctx) {
+    var len = Math.floor(ctx.sampleRate * 1.0);
+    var buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+    var data = buffer.getChannelData(0);
+    for (var i = 0; i < len; i++) { data[i] = Math.random() * 2 - 1; }
+    return buffer;
+  }
+
+  function voiceTone(ctx, dest, o) {
+    var t0 = o.t0;
+    var dur = o.dur || 0.2;
+    var osc = ctx.createOscillator();
+    osc.type = o.type || 'sine';
+    osc.frequency.setValueAtTime(Math.max(1, o.freq), t0);
+    if (o.glideTo) { osc.frequency.exponentialRampToValueAtTime(Math.max(1, o.glideTo), t0 + dur); }
+
+    var gain = ctx.createGain();
+    var peak = Math.max(0.0002, o.gain == null ? 0.2 : o.gain);
+    var attack = o.attack == null ? 0.01 : o.attack;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peak, t0 + attack);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+    var node = osc;
+    if (o.filter) {
+      var bq = ctx.createBiquadFilter();
+      bq.type = o.filter;
+      bq.frequency.value = o.filterFreq || 900;
+      bq.Q.value = o.q == null ? 1 : o.q;
+      node.connect(bq);
+      node = bq;
+    }
+    node.connect(gain);
+    gain.connect(dest);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.03);
+  }
+
+  function voiceNoise(ctx, dest, noiseBuffer, o) {
+    if (!noiseBuffer) { return; }
+    var t0 = o.t0;
+    var dur = o.dur || 0.1;
+    var src = ctx.createBufferSource();
+    src.buffer = noiseBuffer;
+    src.loop = true;
+
+    var bq = ctx.createBiquadFilter();
+    bq.type = o.filter || 'highpass';
+    bq.frequency.value = o.freq || 800;
+    bq.Q.value = o.q == null ? 0.7 : o.q;
+
+    var gain = ctx.createGain();
+    var peak = Math.max(0.0002, o.gain == null ? 0.12 : o.gain);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peak, t0 + (o.attack == null ? 0.006 : o.attack));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+    src.connect(bq);
+    bq.connect(gain);
+    gain.connect(dest);
+    src.start(t0);
+    src.stop(t0 + dur + 0.03);
+  }
+
+  /** Schedules one sixteenth-note step of the loop. */
+  function scheduleMusicStep(ctx, dest, noiseBuffer, step, t, intensity) {
+    var bar = Math.floor(step / STEPS_PER_BAR) % PROGRESSION.length;
+    var prog = PROGRESSION[bar];
+    var beat = step % STEPS_PER_BAR;
+    var gainScale = 0.85 + (intensity - 1) * 0.06;
+
+    if (beat === 0 || beat === 8 || (intensity >= 3 && beat === 12)) {
+      voiceTone(ctx, dest, { freq: 150, glideTo: 46, type: 'sine', t0: t, dur: 0.22, gain: 0.30 * gainScale });
+    }
+    if (beat % 2 === 0 || intensity >= 4) {
+      voiceNoise(ctx, dest, noiseBuffer, {
+        t0: t, dur: 0.05, gain: (beat % 4 === 0 ? 0.05 : 0.03) * gainScale, freq: 7200
+      });
+    }
+    if (beat === 0 || beat === 6 || beat === 10) {
+      voiceTone(ctx, dest, {
+        freq: prog.bass * (beat === 6 ? 2 : 1), type: 'triangle', t0: t,
+        dur: beat === 0 ? 0.5 : 0.3, gain: 0.24 * gainScale
+      });
+    }
+    if (beat === 0) {
+      for (var i = 0; i < prog.chord.length; i++) {
+        voiceTone(ctx, dest, { freq: prog.chord[i], type: 'sine', t0: t, dur: 1.7, gain: 0.075, attack: 0.35 });
+      }
+    }
+    var arpSteps = intensity >= 3 ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12];
+    var pos = arpSteps.indexOf(beat);
+    if (pos >= 0) {
+      var note = prog.chord[pos % prog.chord.length] * (pos % 3 === 2 ? 2 : 1);
+      voiceTone(ctx, dest, {
+        freq: note, type: 'square', t0: t, dur: 0.16, gain: 0.05 * gainScale,
+        filter: 'lowpass', filterFreq: 2600
+      });
+    }
+  }
+
+  AudioManager.prototype._renderMusicLoops = function () {
+    if (this._loopsBaked || this._loopBuilding) { return; }
+    var OAC = root.OfflineAudioContext || root.webkitOfflineAudioContext;
+    if (!OAC || !this.ctx) { return; }
+
     var self = this;
-    this._timer = setInterval(function () { self._tick(); }, 25);
+    var sampleRate = this.ctx.sampleRate;
+    var beat = 60 / BASE_BPM / 4;
+    var steps = MUSIC_BARS * STEPS_PER_BAR;
+    var duration = steps * beat + 0.05;
+    var frames = Math.ceil(sampleRate * duration);
+
+    this._loopBuilding = true;
+    var variants = [
+      { key: 'calm', intensity: 1.6 },
+      { key: 'full', intensity: 5 }
+    ];
+    var index = 0;
+
+    function fail(err) {
+      self._loopBuilding = false;
+      self._loopsBaked = false;
+      self._loopFailed = true;
+      if (root.console) {
+        root.console.warn('[audio] offline music unavailable, falling back to the live scheduler', err && err.message);
+      }
+    }
+
+    // Variants are rendered one after another so no single task blocks the
+    // main thread for long (this runs in the background during the menu).
+    function renderNext() {
+      if (index >= variants.length) {
+        self._loopsBaked = true;
+        self._loopBuilding = false;
+        if (self.musicOn) { self._startLoopSources(); }
+        self._stopScheduler();
+        return;
+      }
+      var variant = variants[index++];
+      var off;
+      try {
+        off = new OAC(1, frames, sampleRate);
+      } catch (err) {
+        fail(err);
+        return;
+      }
+      var dest = off.createGain();
+      dest.gain.value = 1;
+      dest.connect(off.destination);
+      var noise = createNoiseBuffer(off);
+      for (var i = 0; i < steps; i++) {
+        scheduleMusicStep(off, dest, noise, i, 0.02 + i * beat, variant.intensity);
+      }
+      off.startRendering().then(function (buffer) {
+        self._loops[variant.key] = buffer;
+        if (typeof setTimeout === 'function') { setTimeout(renderNext, 0); } else { renderNext(); }
+      }).catch(fail);
+    }
+
+    renderNext();
   };
 
-  AudioManager.prototype.stopMusic = function () {
-    this.musicOn = false;
+  AudioManager.prototype._startLoopSources = function () {
+    var ctx = this.ctx;
+    if (!ctx || !this._loops.calm || !this._loops.full) { return; }
+    if (this._loopNodes) { return; }
+    try {
+      var t0 = ctx.currentTime + 0.06;
+      var calm = ctx.createBufferSource();
+      calm.buffer = this._loops.calm;
+      calm.loop = true;
+      var full = ctx.createBufferSource();
+      full.buffer = this._loops.full;
+      full.loop = true;
+
+      var calmGain = ctx.createGain();
+      var fullGain = ctx.createGain();
+      calmGain.gain.value = 1;
+      fullGain.gain.value = 0;
+      calm.connect(calmGain);
+      full.connect(fullGain);
+      calmGain.connect(this.musicGain);
+      fullGain.connect(this.musicGain);
+      calm.start(t0);
+      full.start(t0);
+
+      this._loopNodes = { calm: calm, full: full, calmGain: calmGain, fullGain: fullGain };
+      this._applyLoopMix(true);
+    } catch (err) {
+      this._fail(err);
+    }
+  };
+
+  AudioManager.prototype._applyLoopMix = function (immediate) {
+    var nodes = this._loopNodes;
+    if (!nodes || !this.ctx) { return; }
+    var k = Utils.clamp((this.intensity - 1) / 4, 0, 1);
+    var now = this.ctx.currentTime;
+    var rate = 1 + (this.intensity - 1) * 0.012;
+    try {
+      if (immediate) {
+        nodes.fullGain.gain.setValueAtTime(k, now);
+        nodes.calmGain.gain.setValueAtTime(1 - k, now);
+        nodes.calm.playbackRate.setValueAtTime(rate, now);
+        nodes.full.playbackRate.setValueAtTime(rate, now);
+      } else {
+        nodes.fullGain.gain.setTargetAtTime(k, now, 0.5);
+        nodes.calmGain.gain.setTargetAtTime(1 - k, now, 0.5);
+        nodes.calm.playbackRate.setTargetAtTime(rate, now, 0.8);
+        nodes.full.playbackRate.setTargetAtTime(rate, now, 0.8);
+      }
+    } catch (err) {
+      this._fail(err);
+    }
+  };
+
+  AudioManager.prototype._stopLoopSources = function () {
+    var nodes = this._loopNodes;
+    if (!nodes) { return; }
+    this._loopNodes = null;
+    try {
+      nodes.calm.stop();
+      nodes.full.stop();
+      nodes.calm.disconnect();
+      nodes.full.disconnect();
+      nodes.calmGain.disconnect();
+      nodes.fullGain.disconnect();
+    } catch (err) { /* already stopped */ }
+  };
+
+  /** Low-cost fallback used only until the offline loops are ready. */
+  AudioManager.prototype._startScheduler = function () {
+    if (this._timer || this._loopNodes) { return; }
+    var self = this;
+    this._step = 0;
+    this._nextTime = this.ctx.currentTime + 0.08;
+    this._timer = setInterval(function () { self._tick(); }, 60);
+  };
+
+  AudioManager.prototype._stopScheduler = function () {
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
     }
   };
 
+  AudioManager.prototype.startMusic = function () {
+    if (!this.available || !this.settings.music) { return; }
+    var ctx = this.ensureContext();
+    if (!ctx) { return; }
+    this.musicOn = true;
+    if (this._loopsBaked) {
+      this._startLoopSources();
+      return;
+    }
+    if (this._loopFailed || this._loopNodes) { return; }
+    this._startScheduler();
+    this._renderMusicLoops();
+  };
+
+  AudioManager.prototype.stopMusic = function () {
+    this.musicOn = false;
+    this._stopScheduler();
+    this._stopLoopSources();
+  };
+
   AudioManager.prototype._tick = function () {
     var ctx = this.ctx;
-    if (!ctx) { return; }
-    if (ctx.state === 'suspended') { return; }
-    var stepDur = 60 / this._bpm / 4; // sixteenth note
-    var horizon = ctx.currentTime + 0.18;
+    if (!ctx || ctx.state === 'suspended') { return; }
+    var stepDur = 60 / this._bpm / 4;
+    var horizon = ctx.currentTime + 0.3;
     var guard = 0;
     while (this._nextTime < horizon && guard++ < 32) {
-      this._scheduleStep(this._step, this._nextTime);
+      scheduleMusicStep(ctx, this.musicGain, this._noiseBuffer, this._step, this._nextTime, this.intensity);
       this._nextTime += stepDur;
-      this._step = (this._step + 1) % 64;
+      this._step = (this._step + 1) % (MUSIC_BARS * STEPS_PER_BAR);
     }
-  };
-
-  AudioManager.prototype._scheduleStep = function (step, t) {
-    var intensity = this.intensity;
-    var bar = Math.floor(step / 16) % 4;
-    var prog = PROGRESSION[bar];
-    var beat = step % 16;
-    var gainScale = 0.85 + (intensity - 1) * 0.06;
-
-    // Kick on 1 and 3 (plus 2.5 accents at higher difficulty)
-    if (beat === 0 || beat === 8 || (intensity >= 3 && beat === 12)) {
-      this._musicTone({ freq: 150, glideTo: 46, type: 'sine', t0: t, dur: 0.22, gain: 0.30 * gainScale });
-    }
-    // Hats on eighths, sixteenths from level 4
-    if (beat % 2 === 0 || intensity >= 4) {
-      this._musicNoise({ t0: t, dur: 0.05, gain: (beat % 4 === 0 ? 0.05 : 0.03) * gainScale, freq: 7200 });
-    }
-    // Bass line
-    if (beat === 0 || beat === 6 || beat === 10) {
-      this._musicTone({ freq: prog.bass * (beat === 6 ? 2 : 1), type: 'triangle', t0: t, dur: beat === 0 ? 0.5 : 0.3, gain: 0.24 * gainScale });
-    }
-    // Pad chord on the bar line
-    if (beat === 0) {
-      for (var i = 0; i < prog.chord.length; i++) {
-        this._musicTone({ freq: prog.chord[i], type: 'sine', t0: t, dur: 1.7, gain: 0.075, attack: 0.35 });
-      }
-    }
-    // Arpeggio
-    var arpSteps = intensity >= 3 ? [0, 2, 4, 6, 8, 10, 12, 14] : [0, 4, 8, 12];
-    var pos = arpSteps.indexOf(beat);
-    if (pos >= 0) {
-      var note = prog.chord[pos % prog.chord.length] * (pos % 3 === 2 ? 2 : 1);
-      this._musicTone({ freq: note, type: 'square', t0: t, dur: 0.16, gain: 0.05 * gainScale, filter: 'lowpass', filterFreq: 2600 });
-    }
-  };
-
-  AudioManager.prototype._musicTone = function (o) {
-    o.dest = this.musicGain;
-    this._tone(o);
-  };
-
-  AudioManager.prototype._musicNoise = function (o) {
-    o.dest = this.musicGain;
-    this._noise(o);
   };
 
   AudioManager.prototype.dispose = function () {
     this.stopMusic();
+    this._loops = { calm: null, full: null };
+    this._loopsBaked = false;
     try {
       if (this.ctx && typeof this.ctx.close === 'function') { this.ctx.close(); }
     } catch (err) { /* ignore */ }

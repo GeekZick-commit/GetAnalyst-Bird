@@ -2,6 +2,11 @@
    obstacle.js — ObstaclePair / ObstacleManager.
    Passages are carved between natural structures (mossy rocks, logs, vines),
    never pipes. Generation guarantees that every passage stays reachable.
+
+   Performance notes: gradients are created once per style (not per frame),
+   the organic bumps are precomputed per pair (no RNG in the hot path) and
+   collision tests allocate nothing (they used to build two rect objects per
+   pair per frame, which fed the garbage collector).
    ========================================================================== */
 (function (root, factory) {
   'use strict';
@@ -26,10 +31,50 @@
     vine: { top: '#7C8C4A', mid: '#5B6B33', bottom: '#3A4722', line: '#2C361A', moss: '#8FC65B', mossDark: '#5E8F3B' }
   };
 
-  function makeDecor(seed, kind) {
+  var GREENS = ['#63A94F', '#7CC35D', '#4C8C3E'];
+
+  /* ------------------------- cached paints ------------------------- */
+
+  var PAINT = { ctx: null, column: {}, shade: {} };
+
+  function useContext(ctx) {
+    if (PAINT.ctx !== ctx) {
+      PAINT.ctx = ctx;
+      PAINT.column = {};
+      PAINT.shade = {};
+    }
+  }
+
+  function columnGradient(ctx, style, w) {
+    useContext(ctx);
+    var g = PAINT.column[style];
+    if (!g) {
+      var p = STYLE_PALETTE[style] || STYLE_PALETTE.stone;
+      g = ctx.createLinearGradient(0, 0, w, 0);
+      g.addColorStop(0, p.top);
+      g.addColorStop(0.45, p.mid);
+      g.addColorStop(1, p.bottom);
+      PAINT.column[style] = g;
+    }
+    return g;
+  }
+
+  function shadeGradient(ctx, w) {
+    useContext(ctx);
+    var g = PAINT.shade[w];
+    if (!g) {
+      g = ctx.createLinearGradient(0, 0, w, 0);
+      g.addColorStop(0, 'rgba(0, 0, 0, 0.20)');
+      g.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
+      g.addColorStop(1, 'rgba(0, 0, 0, 0.16)');
+      PAINT.shade[w] = g;
+    }
+    return g;
+  }
+
+  function makeDecor(seed, count) {
     var rng = Utils.makeRng(seed);
     var items = [];
-    var count = kind === 'leaf' ? 9 : 12;
     for (var i = 0; i < count; i++) {
       items.push({
         u: rng(),
@@ -42,18 +87,29 @@
     return items;
   }
 
-  /* ------------------------- drawing helpers ------------------------- */
-
-  function organicColumn(ctx, x, y, w, h, palette, seed, isTop) {
-    if (h <= 0) { return; }
+  /** Precomputed silhouette bumps so the shape never shimmers or re-rolls. */
+  function makeBumps(seed) {
     var rng = Utils.makeRng(seed);
-    var grad = ctx.createLinearGradient(x, 0, x + w, 0);
-    grad.addColorStop(0, palette.top);
-    grad.addColorStop(0.45, palette.mid);
-    grad.addColorStop(1, palette.bottom);
-    ctx.fillStyle = grad;
+    var out = [];
+    for (var i = 0; i < 4; i++) {
+      out.push({
+        v: (i + 0.5) / 4,
+        r: 0.16 + rng() * 0.13,
+        j1: rng() * 5,
+        j2: rng() * 5,
+        dy: rng() * 0.06
+      });
+    }
+    return out;
+  }
 
-    // main mass
+  /* ------------------------- drawing (pair-local coords) ------------------------- */
+
+  function paintColumn(ctx, x, y, w, h, style, bumps, isTop, cracks) {
+    if (h <= 0) { return; }
+    var palette = STYLE_PALETTE[style] || STYLE_PALETTE.stone;
+    ctx.fillStyle = columnGradient(ctx, style, w);
+
     ctx.beginPath();
     ctx.moveTo(x + 4, y);
     ctx.lineTo(x + w - 4, y);
@@ -64,16 +120,15 @@
     ctx.fill();
 
     // organic bumps along both vertical edges
-    var bumps = 4;
-    for (var i = 0; i < bumps; i++) {
-      var v = (i + 0.5) / bumps;
-      var by = y + h * v;
-      var br = w * (0.16 + rng() * 0.13);
+    for (var i = 0; i < bumps.length; i++) {
+      var b = bumps[i];
+      var by = y + h * b.v;
+      var br = w * b.r;
       ctx.beginPath();
-      ctx.arc(x + rng() * 5, by, br, 0, TAU);
+      ctx.arc(x + b.j1, by, br, 0, TAU);
       ctx.fill();
       ctx.beginPath();
-      ctx.arc(x + w - rng() * 5, by + h * 0.06, br * 0.92, 0, TAU);
+      ctx.arc(x + w - b.j2, by + h * b.dy, br * 0.92, 0, TAU);
       ctx.fill();
     }
 
@@ -82,29 +137,30 @@
     ctx.globalAlpha = 0.35;
     ctx.strokeStyle = palette.line;
     ctx.lineWidth = Math.max(1.5, w * 0.03);
-    if (palette === STYLE_PALETTE.wood) {
-      for (var g = 0; g < 4; g++) {
-        var gx = x + w * (0.2 + g * 0.2);
+    var n, gx;
+    if (style === 'wood') {
+      for (n = 0; n < 4; n++) {
+        gx = x + w * (0.2 + n * 0.2);
         ctx.beginPath();
         ctx.moveTo(gx, y + h * 0.04);
         ctx.bezierCurveTo(gx + 8, y + h * 0.35, gx - 8, y + h * 0.65, gx + 4, y + h * 0.97);
         ctx.stroke();
       }
-    } else if (palette === STYLE_PALETTE.stone) {
-      for (var c = 0; c < 6; c++) {
-        var cx = x + w * (0.15 + rng() * 0.7);
-        var cy = y + h * (0.08 + rng() * 0.84);
+    } else if (style === 'stone') {
+      for (n = 0; n < cracks.length; n++) {
+        var cx = x + w * (0.15 + cracks[n].u * 0.7);
+        var cy = y + h * (0.08 + cracks[n].v * 0.84);
         ctx.beginPath();
         ctx.moveTo(cx, cy);
-        ctx.lineTo(cx + (rng() - 0.5) * w * 0.5, cy + (rng() - 0.5) * h * 0.09);
+        ctx.lineTo(cx + (cracks[n].r) * w * 0.5, cy + (cracks[n].tone - 0.5) * h * 0.09);
         ctx.stroke();
       }
     } else {
-      for (var v2 = 0; v2 < 5; v2++) {
-        var vx = x + w * (0.2 + v2 * 0.15);
+      for (n = 0; n < 5; n++) {
+        gx = x + w * (0.2 + n * 0.15);
         ctx.beginPath();
-        ctx.moveTo(vx, y);
-        ctx.quadraticCurveTo(vx + 10, y + h * 0.5, vx - 6, y + h);
+        ctx.moveTo(gx, y);
+        ctx.quadraticCurveTo(gx + 10, y + h * 0.5, gx - 6, y + h);
         ctx.stroke();
       }
     }
@@ -121,21 +177,19 @@
     ctx.beginPath();
     ctx.ellipse(x + w * 0.42, capY + (isTop ? -capH * 0.35 : capH * 0.35), w * 0.34, capH * 0.55, 0, 0, TAU);
     ctx.fill();
-    void isTop;
   }
 
-  function drawLeaves(ctx, decor, x, y, w, h, isTop) {
+  function paintLeaves(ctx, decor, x, y, w, h, isTop) {
     var baseY = isTop ? y + h : y;
     for (var i = 0; i < decor.length; i++) {
       var d = decor[i];
       var lx = x + d.u * w;
       var ly = baseY + (isTop ? -1 : 1) * (6 + d.v * h * 0.22);
       var s = w * 0.30 * d.s;
-      var greens = ['#63A94F', '#7CC35D', '#4C8C3E'];
       ctx.save();
       ctx.translate(lx, ly);
       ctx.rotate(d.r + (isTop ? Math.PI : 0));
-      ctx.fillStyle = greens[Math.floor(d.tone * greens.length) % greens.length];
+      ctx.fillStyle = GREENS[Math.floor(d.tone * GREENS.length) % GREENS.length];
       ctx.beginPath();
       ctx.ellipse(0, -s * 0.5, s * 0.5, s, 0, 0, TAU);
       ctx.fill();
@@ -143,11 +197,8 @@
     }
   }
 
-  function drawVines(ctx, pair, isTop) {
-    var x = pair.x, w = pair.width;
-    var from = isTop ? pair.gapTop : pair.gapBottom;
-    var to = isTop ? 0 : WORLD.groundY;
-    var len = from - to;
+  function paintVines(ctx, x, w, from, to, isTop) {
+    var len = Math.abs(from - to);
     if (len <= 40) { return; }
     var y0 = isTop ? from - 10 : from + 10;
     var dir = isTop ? -1 : 1;
@@ -175,9 +226,11 @@
     this.style = opts.style || 'stone';
     this.seed = opts.seed || Math.floor(Math.random() * 1e9);
     this.passed = false;
-    this.decor = makeDecor(this.seed, 'leaf');
-    this.crackDecor = makeDecor(this.seed + 7, 'crack');
     this.entered = false;
+    this.decor = makeDecor(this.seed, 6);
+    this.cracks = makeDecor(this.seed + 7, 6);
+    this.bumpsTop = makeBumps(this.seed + 13);
+    this.bumpsBottom = makeBumps(this.seed + 21);
   }
 
   ObstaclePair.prototype.getGapCenter = function () {
@@ -188,6 +241,7 @@
     return this.gapBottom - this.gapTop;
   };
 
+  /** Allocates: kept for tests and tooling, not used in the game loop. */
   ObstaclePair.prototype.getRects = function () {
     var f = OBSTACLE.edgeForgiveness;
     return [
@@ -196,39 +250,47 @@
     ];
   };
 
+  /** Allocation-free circle vs axis-aligned rect overlap. */
+  function hitsRect(cx, cy, r, rx, ry, rw, rh) {
+    if (rh <= 0 || rw <= 0) { return false; }
+    var nx = cx < rx ? rx : (cx > rx + rw ? rx + rw : cx);
+    var ny = cy < ry ? ry : (cy > ry + rh ? ry + rh : cy);
+    var dx = cx - nx, dy = cy - ny;
+    return (dx * dx + dy * dy) < (r * r);
+  }
+
   ObstaclePair.prototype.collides = function (bird) {
-    var rects = this.getRects();
-    for (var i = 0; i < rects.length; i++) {
-      var r = rects[i];
-      if (r.h <= 0) { continue; }
-      if (Utils.circleRectOverlap(bird.x, bird.y, bird.hitboxRadius, r.x, r.y, r.w, r.h)) { return true; }
-    }
-    return false;
+    var f = OBSTACLE.edgeForgiveness;
+    var rx = this.x + f;
+    var rw = this.width - f * 2;
+    return hitsRect(bird.x, bird.y, bird.hitboxRadius, rx, 0, rw, this.gapTop - f) ||
+      hitsRect(bird.x, bird.y, bird.hitboxRadius, rx, this.gapBottom + f, rw, WORLD.groundY - this.gapBottom - f * 2);
   };
 
-  ObstaclePair.prototype.draw = function (ctx, time) {
-    var palette = STYLE_PALETTE[this.style] || STYLE_PALETTE.stone;
+  ObstaclePair.prototype.draw = function (ctx) {
     var w = this.width;
+    ctx.save();
+    ctx.translate(this.x, 0);
 
-    organicColumn(ctx, this.x, 0, w, this.gapTop, palette, this.seed, true);
-    organicColumn(ctx, this.x, this.gapBottom, w, WORLD.groundY - this.gapBottom, palette, this.seed + 3, false);
+    paintColumn(ctx, 0, 0, w, this.gapTop, this.style, this.bumpsTop, true, this.cracks);
+    paintColumn(ctx, 0, this.gapBottom, w, WORLD.groundY - this.gapBottom, this.style, this.bumpsBottom, false, this.cracks);
 
     if (this.style === 'vine') {
-      drawVines(ctx, this, true);
-      drawVines(ctx, this, false);
+      paintVines(ctx, 0, w, this.gapTop, 0, true);
+      paintVines(ctx, 0, w, this.gapBottom, WORLD.groundY, false);
     }
-    drawLeaves(ctx, this.decor, this.x, 0, w, this.gapTop, true);
-    drawLeaves(ctx, this.decor, this.x, this.gapBottom, w, WORLD.groundY - this.gapBottom, false);
+    paintLeaves(ctx, this.decor, 0, 0, w, this.gapTop, true);
+    paintLeaves(ctx, this.decor, 0, this.gapBottom, w, WORLD.groundY - this.gapBottom, false);
 
-    // soft ambient shadow inside the passage so depth reads well
-    var shade = ctx.createLinearGradient(this.x, 0, this.x + w, 0);
-    shade.addColorStop(0, 'rgba(0, 0, 0, 0.20)');
-    shade.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
-    shade.addColorStop(1, 'rgba(0, 0, 0, 0.16)');
-    ctx.fillStyle = shade;
-    ctx.fillRect(this.x, 0, w, this.gapTop);
-    ctx.fillRect(this.x, this.gapBottom, w, WORLD.groundY - this.gapBottom);
-    void time;
+    // soft ambient shadow just inside the passage: full-height shading used to
+    // double the blended pixel count of every column for almost no visual gain
+    var band = Math.min(120, this.gapTop);
+    ctx.fillStyle = shadeGradient(ctx, w);
+    if (band > 0) { ctx.fillRect(0, this.gapTop - band, w, band); }
+    var bottomBand = Math.min(120, WORLD.groundY - this.gapBottom);
+    if (bottomBand > 0) { ctx.fillRect(0, this.gapBottom, w, bottomBand); }
+
+    ctx.restore();
   };
 
   /* ------------------------- manager ------------------------- */
@@ -239,11 +301,15 @@
     this.spawnOffset = options.spawnOffset == null ? 40 : options.spawnOffset;
     this.lastStyleIndex = 0;
     this.seedCounter = 1;
+    // reused every frame so update() allocates nothing
+    this.result = { spawned: [], passed: [] };
   }
 
   ObstacleManager.prototype.reset = function () {
     this.pairs.length = 0;
     this.seedCounter = 1;
+    this.result.spawned.length = 0;
+    this.result.passed.length = 0;
   };
 
   ObstacleManager.prototype.count = function () { return this.pairs.length; };
@@ -252,7 +318,7 @@
    * @param {number} dt
    * @param {object} diff smoothed difficulty { speed, gap, interval, centerDrift, level }
    * @param {{ birdX: number }} opts
-   * @returns {{ spawned: ObstaclePair[], passed: ObstaclePair[] }}
+   * @returns {{ spawned: ObstaclePair[], passed: ObstaclePair[] }} reused arrays
    */
   ObstacleManager.prototype.update = function (dt, diff, opts) {
     opts = opts || {};
@@ -260,35 +326,37 @@
     var speed = diff.speed;
     var i;
 
+    var result = this.result;
+    result.spawned.length = 0;
+    result.passed.length = 0;
+
     for (i = 0; i < this.pairs.length; i++) {
       this.pairs[i].x -= speed * dt;
       if (!this.pairs[i].entered && this.pairs[i].x < WORLD.width) { this.pairs[i].entered = true; }
     }
 
-    var passed = [];
     for (i = this.pairs.length - 1; i >= 0; i--) {
       var pair = this.pairs[i];
       if (pair.x + pair.width < -80) { this.pairs.splice(i, 1); continue; }
       if (!pair.passed && pair.x + pair.width < birdX) {
         pair.passed = true;
-        passed.push(pair);
+        result.passed.push(pair);
       }
     }
 
     var spacing = Math.max(260, speed * diff.interval);
-    var spawned = [];
     var last = this.pairs.length ? this.pairs[this.pairs.length - 1] : null;
     var spawnX = WORLD.width + this.spawnOffset;
     var threshold = spawnX - spacing;
 
     if (!last || last.x <= threshold) {
       var x = last ? Math.max(spawnX, last.x + spacing) : spawnX;
-      var pair2 = this.createPair(x, diff, last);
-      this.pairs.push(pair2);
-      spawned.push(pair2);
+      var created = this.createPair(x, diff, last);
+      this.pairs.push(created);
+      result.spawned.push(created);
     }
 
-    return { spawned: spawned, passed: passed };
+    return result;
   };
 
   ObstacleManager.prototype.createPair = function (x, diff, last) {
@@ -307,7 +375,7 @@
     // Keep consecutive styles varied without making difficulty jump.
     this.lastStyleIndex = (this.lastStyleIndex + 1 + (Utils.chance(0.4) ? 1 : 0)) % STYLES.length;
 
-    var pair = new ObstaclePair({
+    return new ObstaclePair({
       x: x,
       width: OBSTACLE.width,
       gapTop: Math.round(center - gap / 2),
@@ -315,7 +383,6 @@
       style: STYLES[this.lastStyleIndex],
       seed: 1000 + (this.seedCounter++) * 37
     });
-    return pair;
   };
 
   ObstacleManager.prototype.collides = function (bird) {
@@ -325,9 +392,9 @@
     return null;
   };
 
-  ObstacleManager.prototype.draw = function (ctx, time) {
+  ObstacleManager.prototype.draw = function (ctx) {
     for (var i = 0; i < this.pairs.length; i++) {
-      this.pairs[i].draw(ctx, time);
+      this.pairs[i].draw(ctx);
     }
   };
 

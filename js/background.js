@@ -1,6 +1,17 @@
 /* ==========================================================================
    background.js — ParallaxBackground: summer sky, sun, clouds, hills,
-   greenery and a grassy ground strip. Deterministic and seamless.
+   greenery and a grassy ground strip.
+
+   Performance model
+   -----------------
+   Frame time here is dominated by *fill rate*, not by vector work, so the
+   scene is arranged to blend as few pixels as possible per frame:
+
+   * every layer is baked once into an offscreen tile (buildCache);
+   * sky + sun + distant hills form one opaque backdrop blitted with
+     globalCompositeOperation = 'copy', which also replaces the per-frame
+     clearRect (no alpha blending for ~830k pixels);
+   * only three blended layers move: clouds, near hills, foreground greenery.
    ========================================================================== */
 (function (root, factory) {
   'use strict';
@@ -15,6 +26,8 @@
 
   var WORLD = Config.WORLD;
   var makeRng = Utils.makeRng;
+
+  /* ------------------------- layer data ------------------------- */
 
   function buildClouds(seed, count, tile) {
     var rng = makeRng(seed), out = [];
@@ -64,75 +77,35 @@
     return out;
   }
 
-  function ParallaxBackground() {
-    this.tile = { clouds: 1900, hillsFar: 2100, hillsNear: 1700, trees: 1500, tufts: 1000 };
-    this.clouds = buildClouds(1337, 10, this.tile.clouds);
-    this.hillsFar = buildHills(99, 7, this.tile.hillsFar, 470, 190);
-    this.hillsNear = buildHills(4242, 8, this.tile.hillsNear, 545, 150);
-    this.trees = buildTrees(777, 14, this.tile.trees);
-    this.tufts = buildTufts(2024, 26, this.tile.tufts);
-    this.offsets = { clouds: 0, hillsFar: 0, hillsNear: 0, trees: 0, tufts: 0 };
-    this.time = 0;
-    this.speedRatio = 1;
-  }
+  /* ------------------------- painting (world coords) ------------------------- */
 
-  ParallaxBackground.prototype.reset = function () {
-    this.offsets.clouds = this.offsets.hillsFar = this.offsets.hillsNear = this.offsets.trees = this.offsets.tufts = 0;
-    this.time = 0;
-  };
-
-  ParallaxBackground.prototype.update = function (dt, speed) {
-    this.time += dt;
-    this.speedRatio = speed / 300;
-    // Slight speed-up with difficulty keeps the parallax believable.
-    var s = speed * (0.9 + 0.1 * Math.min(2, this.speedRatio));
-    this.offsets.clouds += s * 0.08 * dt;
-    this.offsets.hillsFar += s * 0.17 * dt;
-    this.offsets.hillsNear += s * 0.33 * dt;
-    this.offsets.trees += s * 0.62 * dt;
-    this.offsets.tufts += s * 1.0 * dt;
-  };
-
-  function tileDraw(ctx, items, offset, tileWidth, drawFn) {
-    var shift = offset % tileWidth;
-    for (var copy = -1; copy <= 1; copy++) {
-      for (var i = 0; i < items.length; i++) {
-        var x = items[i].x - shift + copy * tileWidth;
-        if (x < -420 || x > WORLD.width + 420) { continue; }
-        drawFn(items[i], x);
-      }
-    }
-  }
-
-  function drawSky(ctx) {
-    var g = ctx.createLinearGradient(0, 0, 0, WORLD.groundY);
+  function paintSky(ctx, w, h) {
+    var g = ctx.createLinearGradient(0, 0, 0, h);
     g.addColorStop(0, '#1E63C8');
     g.addColorStop(0.34, '#4FA3E3');
     g.addColorStop(0.68, '#9BD7F2');
     g.addColorStop(1, '#FFE9B0');
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, WORLD.width, WORLD.groundY + 2);
+    ctx.fillRect(0, 0, w, h);
   }
 
-  function drawSun(ctx, time) {
-    var x = 1030, y = 132;
-    var pulse = 1 + Math.sin(time * 0.6) * 0.03;
-    var halo = ctx.createRadialGradient(x, y, 10, x, y, 230 * pulse);
+  function paintSun(ctx, cx, cy) {
+    var halo = ctx.createRadialGradient(cx, cy, 10, cx, cy, 230);
     halo.addColorStop(0, 'rgba(255, 244, 191, 0.95)');
     halo.addColorStop(0.35, 'rgba(255, 226, 130, 0.35)');
     halo.addColorStop(1, 'rgba(255, 226, 130, 0)');
     ctx.fillStyle = halo;
     ctx.beginPath();
-    ctx.arc(x, y, 230 * pulse, 0, Utils.TAU);
+    ctx.arc(cx, cy, 230, 0, Utils.TAU);
     ctx.fill();
 
     ctx.fillStyle = '#FFF6CE';
     ctx.beginPath();
-    ctx.arc(x, y, 62, 0, Utils.TAU);
+    ctx.arc(cx, cy, 62, 0, Utils.TAU);
     ctx.fill();
   }
 
-  function drawCloud(ctx, cloud, x) {
+  function paintCloud(ctx, cloud, x) {
     var s = cloud.scale;
     ctx.save();
     ctx.globalAlpha = cloud.alpha * 0.92;
@@ -155,7 +128,7 @@
     ctx.restore();
   }
 
-  function drawHill(ctx, hill, x, fill, shade) {
+  function paintHill(ctx, hill, x, fill, shade) {
     var g = ctx.createLinearGradient(0, hill.y - hill.h, 0, WORLD.groundY + 20);
     g.addColorStop(0, fill);
     g.addColorStop(1, shade);
@@ -167,7 +140,7 @@
     ctx.fill();
   }
 
-  function drawTree(ctx, item, x) {
+  function paintTree(ctx, item, x) {
     var s = item.scale;
     var baseY = WORLD.groundY + 6;
     var greens = ['#3E8E5A', '#4AA26A', '#357C4E'];
@@ -207,30 +180,7 @@
     ctx.fill();
   }
 
-  function drawGround(ctx, time) {
-    var y = WORLD.groundY;
-    var g = ctx.createLinearGradient(0, y, 0, WORLD.height);
-    g.addColorStop(0, '#7ED957');
-    g.addColorStop(0.10, '#5FBF46');
-    g.addColorStop(0.34, '#3E8F3A');
-    g.addColorStop(1, '#2A5F2C');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, y, WORLD.width, WORLD.height - y);
-
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
-    ctx.fillRect(0, y, WORLD.width, 4);
-
-    // soft light sweep on the grass so the ground does not look flat
-    var sweep = ((time * 60) % (WORLD.width + 400)) - 200;
-    var lg = ctx.createLinearGradient(sweep - 180, 0, sweep + 180, 0);
-    lg.addColorStop(0, 'rgba(255,255,255,0)');
-    lg.addColorStop(0.5, 'rgba(255,255,255,0.08)');
-    lg.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = lg;
-    ctx.fillRect(0, y, WORLD.width, WORLD.height - y);
-  }
-
-  function drawTuft(ctx, item, x) {
+  function paintTuft(ctx, item, x) {
     var y = WORLD.groundY + 4;
     var tones = ['#8FE86A', '#6FD24C', '#A6F07F'];
     ctx.strokeStyle = tones[Math.floor(item.tone * tones.length) % tones.length];
@@ -245,40 +195,174 @@
     }
   }
 
-  ParallaxBackground.prototype.draw = function (ctx, opts) {
-    opts = opts || {};
-    var time = this.time;
+  function paintGround(ctx) {
+    var y = WORLD.groundY;
+    var g = ctx.createLinearGradient(0, y, 0, WORLD.height);
+    g.addColorStop(0, '#7ED957');
+    g.addColorStop(0.10, '#5FBF46');
+    g.addColorStop(0.34, '#3E8F3A');
+    g.addColorStop(1, '#2A5F2C');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, y, WORLD.width, WORLD.height - y);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+    ctx.fillRect(0, y, WORLD.width, 4);
+  }
 
-    drawSky(ctx);
-    drawSun(ctx, time);
+  /* ------------------------- background ------------------------- */
 
-    tileDraw(ctx, this.clouds, this.offsets.clouds, this.tile.clouds, function (item, x) {
-      drawCloud(ctx, item, x);
-    });
+  // vertical slice of the world each moving layer needs to bake
+  var LAYER = {
+    clouds: { top: 0, height: 350 },
+    hillsNear: { top: 380, height: 330 },
+    foreground: { top: 470, height: 250 }
+  };
 
-    tileDraw(ctx, this.hillsFar, this.offsets.hillsFar, this.tile.hillsFar, function (item, x) {
-      drawHill(ctx, item, x, '#8FC7A6', '#5FA37F');
-    });
+  function ParallaxBackground() {
+    this.tile = { clouds: 1900, hillsNear: 1700, foreground: 3000 };
+    this.clouds = buildClouds(1337, 10, this.tile.clouds);
+    this.hillsFar = buildHills(99, 7, 2100, 470, 190);
+    this.hillsNear = buildHills(4242, 8, this.tile.hillsNear, 545, 150);
+    this.trees = buildTrees(777, 14, 1500);
+    this.tufts = buildTufts(2024, 26, 1000);
+    this.offsets = { clouds: 0, hillsNear: 0, foreground: 0 };
+    this.time = 0;
+    this.speedRatio = 1;
+    this.cache = null;
+  }
 
-    tileDraw(ctx, this.hillsNear, this.offsets.hillsNear, this.tile.hillsNear, function (item, x) {
-      drawHill(ctx, item, x, '#69B87F', '#3F8D5B');
-    });
+  ParallaxBackground.prototype.reset = function () {
+    this.offsets.clouds = this.offsets.hillsNear = this.offsets.foreground = 0;
+    this.time = 0;
+  };
 
-    drawGround(ctx, time);
+  ParallaxBackground.prototype.update = function (dt, speed) {
+    this.time += dt;
+    this.speedRatio = speed / 300;
+    var s = speed * (0.9 + 0.1 * Math.min(2, this.speedRatio));
+    this.offsets.clouds += s * 0.08 * dt;
+    this.offsets.hillsNear += s * 0.33 * dt;
+    this.offsets.foreground += s * 0.78 * dt;
+  };
 
-    tileDraw(ctx, this.trees, this.offsets.trees, this.tile.trees, function (item, x) {
-      drawTree(ctx, item, x);
-    });
+  function makeCanvas(w, h) {
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(w));
+    canvas.height = Math.max(1, Math.ceil(h));
+    return canvas;
+  }
 
-    tileDraw(ctx, this.tufts, this.offsets.tufts, this.tile.tufts, function (item, x) {
-      drawTuft(ctx, item, x);
-    });
-
-    if (opts.dim) {
-      // Menu / pause overlays: gently darken the world so UI stays readable.
-      ctx.fillStyle = 'rgba(6, 11, 12, ' + opts.dim + ')';
-      ctx.fillRect(0, 0, WORLD.width, WORLD.height);
+  /**
+   * Bakes one or more repeating sub-layers into a single tile.
+   * layers: [{ items, paint, spacing }]
+   */
+  function bakeTile(tileWidth, slice, layers) {
+    var canvas = makeCanvas(tileWidth, slice.height);
+    var ctx = canvas.getContext('2d');
+    ctx.translate(0, -slice.top);
+    for (var l = 0; l < layers.length; l++) {
+      var layer = layers[l];
+      var copies = Math.ceil(tileWidth / layer.spacing);
+      for (var copy = 0; copy <= copies; copy++) {
+        for (var i = 0; i < layer.items.length; i++) {
+          var x = layer.items[i].x + copy * layer.spacing;
+          if (x > tileWidth + 260) { continue; }
+          layer.paint(ctx, layer.items[i], x);
+        }
+      }
     }
+    return canvas;
+  }
+
+  ParallaxBackground.prototype.buildCache = function () {
+    if (this.cache || typeof document === 'undefined') { return this.cache; }
+
+    // opaque backdrop: sky + sun + distant hills (blitted with 'copy')
+    var backdrop = makeCanvas(WORLD.width, WORLD.groundY + 2);
+    var bctx = backdrop.getContext('2d');
+    paintSky(bctx, backdrop.width, backdrop.height);
+    paintSun(bctx, 1030, 132);
+    for (var i = -1; i <= 1; i++) {
+      for (var h = 0; h < this.hillsFar.length; h++) {
+        paintHill(bctx, this.hillsFar[h], this.hillsFar[h].x + i * 2100, '#8FC7A6', '#5FA37F');
+      }
+    }
+
+    var ground = makeCanvas(WORLD.width, WORLD.height - WORLD.groundY);
+    var gctx = ground.getContext('2d');
+    gctx.translate(0, -WORLD.groundY);
+    paintGround(gctx);
+
+    this.cache = {
+      backdrop: backdrop,
+      ground: ground,
+      groundTop: WORLD.groundY,
+      clouds: bakeTile(this.tile.clouds, LAYER.clouds, [
+        { items: this.clouds, paint: paintCloud, spacing: this.tile.clouds }
+      ]),
+      hillsNear: bakeTile(this.tile.hillsNear, LAYER.hillsNear, [
+        {
+          items: this.hillsNear,
+          paint: function (c, item, x) { paintHill(c, item, x, '#69B87F', '#3F8D5B'); },
+          spacing: this.tile.hillsNear
+        }
+      ]),
+      foreground: bakeTile(this.tile.foreground, LAYER.foreground, [
+        { items: this.trees, paint: paintTree, spacing: 1500 },
+        { items: this.tufts, paint: paintTuft, spacing: 1000 }
+      ]),
+      sweep: null,
+      ctxRef: null
+    };
+    return this.cache;
+  };
+
+  function blitTile(ctx, tile, tileWidth, offset, top) {
+    var shift = offset % tileWidth;
+    if (shift < 0) { shift += tileWidth; }
+    var x = -shift;
+    while (x < WORLD.width) {
+      ctx.drawImage(tile, x, top);
+      x += tileWidth;
+    }
+  }
+
+  ParallaxBackground.prototype.draw = function (ctx) {
+    var cache = this.cache || this.buildCache();
+    if (!cache) { return; } // no DOM (unit tests)
+
+    if (cache.ctxRef !== ctx) {
+      cache.ctxRef = ctx;
+      var grad = ctx.createLinearGradient(-200, 0, 200, 0);
+      grad.addColorStop(0, 'rgba(255,255,255,0)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      cache.sweep = grad;
+    }
+
+    // 'copy' both clears the frame and paints the backdrop without blending
+    ctx.globalCompositeOperation = 'copy';
+    ctx.drawImage(cache.backdrop, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+
+    blitTile(ctx, cache.clouds, this.tile.clouds, this.offsets.clouds, LAYER.clouds.top);
+    blitTile(ctx, cache.hillsNear, this.tile.hillsNear, this.offsets.hillsNear, LAYER.hillsNear.top);
+
+    ctx.drawImage(cache.ground, 0, cache.groundTop);
+
+    blitTile(ctx, cache.foreground, this.tile.foreground, this.offsets.foreground, LAYER.foreground.top);
+
+    // travelling light sweep on the grass
+    var sweep = ((this.time * 60) % (WORLD.width + 400)) - 200;
+    ctx.save();
+    ctx.translate(sweep, 0);
+    ctx.fillStyle = cache.sweep;
+    ctx.fillRect(-200, cache.groundTop, 400, WORLD.height - cache.groundTop);
+    ctx.restore();
+  };
+
+  /** Frees the baked layers. */
+  ParallaxBackground.prototype.dropCache = function () {
+    this.cache = null;
   };
 
   return { ParallaxBackground: ParallaxBackground };

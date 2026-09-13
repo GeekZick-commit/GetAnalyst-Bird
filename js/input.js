@@ -23,6 +23,7 @@
     this.onFlap = options.onFlap || noop;
     this.onPause = options.onPause || noop;
     this.onToggleSound = options.onToggleSound || noop;
+    this.onTogglePerf = options.onTogglePerf || noop;
     this.onAnyGesture = options.onAnyGesture || noop;
     this.onBlur = options.onBlur || noop;
     this.shouldIgnore = options.shouldIgnore || function () { return false; };
@@ -111,6 +112,11 @@
       if (e.repeat) { return; }
       this.onAnyGesture();
       if (!this.shouldIgnore('sound')) { this.onToggleSound(); }
+      return;
+    }
+    if (code === 'KeyF') {
+      if (e.repeat) { return; }
+      if (!this.shouldIgnore('perf')) { this.onTogglePerf(); }
     }
   };
 
