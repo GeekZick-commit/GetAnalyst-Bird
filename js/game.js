@@ -21,8 +21,26 @@
 
   var STATES = { MENU: 'MENU', CHARACTER_SELECT: 'CHARACTER_SELECT', PLAYING: 'PLAYING', PAUSED: 'PAUSED', GAME_OVER: 'GAME_OVER' };
   var MAX_DT = 1 / 20;           // never simulate more than 50 ms in one step
-  var MAX_BACKING_PIXELS = 1.6e6; // canvas budget: keeps HiDPI screens smooth
   var DIFF_REFRESH = 0.2;         // seconds between difficulty target recalculations
+  // Adaptive render scale (backing pixels per logical pixel). The canvas is
+  // rasterised at exactly this integer-friendly scale and the browser scales
+  // the finished surface once, so every internal blit stays 1:1.
+  var QUALITY = {
+    min: 0.6,
+    max: 1.5,
+    start: 1,
+    stepDown: 0.15,
+    stepUp: 0.1,
+    // Frame intervals are compared, not absolute work time: rAF is quantised by
+    // the display refresh, so a 60 Hz screen can never report less than 16.7 ms.
+    dropP90Ms: 28,   // a tenth of the frames are this slow -> too heavy
+    dropP50Ms: 24,   // or the median frame is already below ~42 fps
+    holdP90Ms: 20,   // smooth and near the refresh ceiling -> quality can go up
+    holdP50Ms: 18,
+    windowSec: 0.8,
+    fastWindows: 4,
+    maxSamples: 90
+  };
 
   function Game(options) {
     options = options || {};
@@ -104,6 +122,13 @@
     this.HUD_PORTRAIT_EVERY = 0.5;
     this.portraitTimer = 0;
     this.fps = 0;
+    this.renderScale = QUALITY.start;
+    this.maxRenderScale = 1;
+    this.adaptiveQuality = true;
+    this._qualityTimer = 0;
+    this._frameSamples = [];
+    this._fastWindows = 0;
+    this._qualityWarmup = 2;
     this.ready = false;
     this.readyTime = 0;
     this.showPerf = false;
@@ -234,12 +259,14 @@
   Game.prototype.frame = function (ts) {
     if (!this.running) { return; }
     var self = this;
-    var dt = this.lastTs ? (ts - this.lastTs) / 1000 : 0;
+    var rawDt = this.lastTs ? (ts - this.lastTs) / 1000 : 0;
     this.lastTs = ts;
+    var dt = rawDt;
     if (!isFinite(dt) || dt < 0) { dt = 0; }
     if (dt > MAX_DT) { dt = MAX_DT; }
     this.time += dt;
     if (dt > 0) { this.fps = 1 / dt; }
+    this.trackQuality(rawDt);
 
     try {
       if (this.state === STATES.PAUSED && !this._forceRender) {
@@ -270,17 +297,16 @@
     var stage = this.doc.getElementById('stage');
     var rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
     var cssW = rect && rect.width ? rect.width : WORLD.width;
-    var cssH = rect && rect.height ? rect.height : WORLD.height;
-    var dpr = Utils.clamp(this.win.devicePixelRatio || 1, 1, 2);
-    // On HiDPI displays a 16:9 canvas can easily reach 4M pixels, which is where
-    // frame times explode. Keep the backing store inside a fixed pixel budget.
-    var pixels = cssW * cssH * dpr * dpr;
-    if (pixels > MAX_BACKING_PIXELS) {
-      dpr = Math.max(0.75, Math.sqrt(MAX_BACKING_PIXELS / (cssW * cssH)));
-    }
 
-    canvas.width = Math.max(1, Math.round(cssW * dpr));
-    canvas.height = Math.max(1, Math.round(cssH * dpr));
+    var dpr = Utils.clamp(this.win.devicePixelRatio || 1, 1, 2);
+    this.maxRenderScale = Utils.clamp(Math.min(1.5, Math.max(1, dpr)), QUALITY.min, QUALITY.max);
+    this.renderScale = Utils.clamp(this.renderScale || QUALITY.start, QUALITY.min, this.maxRenderScale);
+
+    // The backing store is a clean multiple of the 1280x720 world: internal
+    // blits are never resampled, and the browser scales the finished surface
+    // once instead of filtering every layer.
+    canvas.width = Math.max(1, Math.round(WORLD.width * this.renderScale));
+    canvas.height = Math.max(1, Math.round(WORLD.height * this.renderScale));
     this.scale = canvas.width / WORLD.width;
     this._forceRender = true;
 
@@ -332,6 +358,7 @@
   };
 
   Game.prototype.startRun = function () {
+    this._qualityWarmup = 2;
     var check = Utils.validateNickname(this.ui.getNickname());
     if (!check.ok) {
       this.ui.setNicknameError(check.error);
@@ -749,6 +776,47 @@
     }
   };
 
+  /**
+   * Dynamic resolution: hold the frame rate on slow machines and hand quality
+   * back when the picture is smooth. Driven by percentiles of the real frame
+   * intervals, with hysteresis so it cannot oscillate.
+   */
+  Game.prototype.trackQuality = function (rawDt) {
+    if (!this.adaptiveQuality || !this.running) { return; }
+    if (!isFinite(rawDt) || rawDt <= 0 || rawDt > 0.5) { return; }
+    this._qualityTimer += rawDt;
+    this._frameSamples.push(rawDt * 1000);
+    if (this._frameSamples.length > QUALITY.maxSamples) { this._frameSamples.shift(); }
+    if (this._qualityTimer < QUALITY.windowSec) { return; }
+    this._qualityTimer = 0;
+    // ignore the first windows: shader/canvas warm-up is not a quality signal
+    if (this._qualityWarmup > 0) { this._qualityWarmup -= 1; this._frameSamples.length = 0; return; }
+
+    var sorted = this._frameSamples.slice().sort(function (a, b) { return a - b; });
+    this._frameSamples.length = 0;
+    if (sorted.length < 10) { return; }
+    var p50 = sorted[Math.floor(sorted.length * 0.5)];
+    var p90 = sorted[Math.floor(sorted.length * 0.9)];
+
+    if ((p90 > QUALITY.dropP90Ms || p50 > QUALITY.dropP50Ms) && this.renderScale > QUALITY.min + 0.001) {
+      this.renderScale = Math.max(QUALITY.min, this.renderScale - QUALITY.stepDown);
+      this._fastWindows = 0;
+      this._qualityWarmup = 1;
+      this.resize();
+      return;
+    }
+    if (p90 <= QUALITY.holdP90Ms && p50 <= QUALITY.holdP50Ms && this.renderScale < this.maxRenderScale - 0.001) {
+      this._fastWindows += 1;
+      if (this._fastWindows >= QUALITY.fastWindows) {
+        this._fastWindows = 0;
+        this.renderScale = Math.min(this.maxRenderScale, this.renderScale + QUALITY.stepUp);
+        this.resize();
+      }
+      return;
+    }
+    this._fastWindows = 0;
+  };
+
   Game.prototype.togglePerf = function () {
     this.showPerf = !this.showPerf;
     this.ui.setPerfVisible(this.showPerf);
@@ -762,8 +830,9 @@
     if (this._perfTimer > 0) { return; }
     this._perfTimer = 0.25;
     this.ui.setPerfText(
-      Math.round(this.fps) + ' FPS · ' + this.particles.count() + ' fx · ' +
-      this.worms.count() + ' worms · ' + this.obstacles.count() + ' walls'
+      Math.round(this.fps) + ' FPS · ' + this.renderScale.toFixed(2) + 'x · ' +
+      this.particles.count() + ' fx · ' + this.worms.count() + ' worms · ' +
+      this.obstacles.count() + ' walls'
     );
   };
 

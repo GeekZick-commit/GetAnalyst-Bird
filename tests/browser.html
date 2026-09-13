@@ -77,6 +77,7 @@
       g.time += step;
       g.update(step);
       g.render();
+      g.updatePerfOverlay(step);
     }
     return Promise.resolve();
   }
@@ -382,6 +383,17 @@
       budget.msPerFrame.toFixed(2) + ' ms/frame (forced rasterisation, software renderer)');
     note('measured frame cost', budget.msPerFrame.toFixed(2) + ' ms');
 
+    key('KeyF');
+    await frames(30);
+    var perfEl = doc.getElementById('perf-hud');
+    check('F shows the performance overlay', perfEl.classList.contains('is-visible'));
+    check('the overlay reports fps and the render scale', /FPS/.test(perfEl.textContent) && /x/.test(perfEl.textContent),
+      perfEl.textContent);
+    note('perf overlay', perfEl.textContent);
+    key('KeyF');
+    await frames(2);
+    check('F hides the overlay again', !perfEl.classList.contains('is-visible'));
+
     /* ---------------- pause ---------------- */
     key('KeyP');
     await frames(2);
@@ -586,10 +598,13 @@
       note('offline audio unavailable, fart not measured', 'skipped');
     } else {
       check('the flap sound synthesises without errors', !fart.error, 'error=' + fart.error);
-      check('the flap sound has body', fart.peak > 0.05, 'peak=' + fart.peak.toFixed(3));
-      check('the flap sound is short (a small creature)', fart.durationMs > 30 && fart.durationMs < 260,
+      check('the flap sound has body', fart.peak > 0.12, 'peak=' + fart.peak.toFixed(3));
+      check('the flap sound is a proper fart, not a click', fart.durationMs > 250 && fart.durationMs < 950,
         'length=' + fart.durationMs.toFixed(0) + 'ms');
-      check('the flap sound is not a bare click', fart.rms > 0.004, 'rms=' + fart.rms.toFixed(4));
+      check('the flap sound is loud enough to be unmistakable', fart.rms > 0.02,
+        'rms=' + fart.rms.toFixed(4));
+      note('flap sound', 'peak ' + fart.peak.toFixed(3) + ', rms ' + fart.rms.toFixed(4) +
+        ', ' + fart.durationMs.toFixed(0) + ' ms');
     }
 
     click('btn-sound');
@@ -609,10 +624,15 @@
     frame.style.height = '236px';
     win.dispatchEvent(new win.Event('resize'));
     await frames(2);
-    check('canvas backing store follows the layout', canvas.width !== beforeWidth, canvas.width + ' vs ' + beforeWidth);
-    checkClose('canvas keeps a 16:9 ratio', canvas.width / canvas.height, 16 / 9, 0.05);
+    check('canvas keeps a 16:9 ratio at any render scale', Math.abs(canvas.width / canvas.height - 16 / 9) < 0.02,
+      canvas.width + 'x' + canvas.height);
+    check('render scale stays inside its budget', g.renderScale >= 0.6 && g.renderScale <= 1.5,
+      'scale=' + g.renderScale);
+    check('canvas matches the render scale', canvas.width === Math.round(1280 * g.renderScale),
+      canvas.width + ' vs ' + Math.round(1280 * g.renderScale));
     var unit = parseFloat(stage.style.getPropertyValue('--u'));
     check('layout unit scales with the stage', unit > 0 && unit < 1.2, 'unit=' + unit);
+    void beforeWidth;
     var overflow = doc.querySelector('.panel').getBoundingClientRect();
     check('menu panel fits inside the stage', overflow.width <= stage.getBoundingClientRect().width + 1);
     frame.style.width = '1024px';

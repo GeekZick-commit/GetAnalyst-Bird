@@ -225,68 +225,83 @@
   };
 
   /**
-   * Tiny-creature fart used for the flap.
-   * Two detuned sawtooth oscillators run through a falling lowpass while a
-   * square LFO wobbles the gain (the rasp), with a very short 90-140 ms
-   * envelope and a tiny band-passed noise "pff" on the attack.
-   * Pitch and length are randomised so repeated flaps never sound identical.
+   * The flap: a proper, unmistakable fart.
+   * Two detuned sawtooths plus a sub sine run through a lowpass that falls from
+   * 1.1 kHz to under 200 Hz while a square LFO wobbles the gain (the rasp), a
+   * band-passed noise layer adds the wet sputter, and the amplitude envelope has
+   * a second "blat" halfway through. Pitch, length and detune are randomised.
    */
   AudioManager.prototype._fart = function () {
     var ctx = this.ctx;
     if (!ctx) { return; }
     try {
       var t0 = ctx.currentTime;
-      var dur = 0.085 + Math.random() * 0.055;
-      var base = 168 + Math.random() * 92;
+      var dur = 0.42 + Math.random() * 0.24;          // 0.42 - 0.66 s
+      var base = 74 + Math.random() * 34;             // 74 - 108 Hz: low and rude
+      var detune = 1.04 + Math.random() * 0.05;
+      var bottom = base * (0.40 + Math.random() * 0.16);
 
+      // amplitude envelope with a two-stage "sputter"
       var env = ctx.createGain();
       env.gain.setValueAtTime(0.0001, t0);
-      env.gain.exponentialRampToValueAtTime(0.40, t0 + 0.012);
+      env.gain.exponentialRampToValueAtTime(0.62, t0 + 0.02);
+      env.gain.exponentialRampToValueAtTime(0.30, t0 + dur * 0.40);
+      env.gain.setValueAtTime(0.30, t0 + dur * 0.50);
+      env.gain.exponentialRampToValueAtTime(0.55, t0 + dur * 0.58);
       env.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
       env.connect(this.sfxGain);
 
+      // deep flutter
       var trem = ctx.createGain();
-      trem.gain.setValueAtTime(0.62, t0);
-      trem.gain.setValueAtTime(0.62, t0 + dur);
+      trem.gain.setValueAtTime(0.55, t0);
+      trem.gain.setValueAtTime(0.55, t0 + dur);
       trem.connect(env);
 
       var lfo = ctx.createOscillator();
       lfo.type = 'square';
-      lfo.frequency.setValueAtTime(28 + Math.random() * 20, t0);
-      lfo.frequency.linearRampToValueAtTime(58 + Math.random() * 30, t0 + dur);
+      lfo.frequency.setValueAtTime(14 + Math.random() * 9, t0);
+      lfo.frequency.linearRampToValueAtTime(30 + Math.random() * 16, t0 + dur);
       var lfoDepth = ctx.createGain();
-      lfoDepth.gain.setValueAtTime(0.34, t0);
-      lfoDepth.gain.exponentialRampToValueAtTime(0.06, t0 + dur);
+      lfoDepth.gain.setValueAtTime(0.62, t0);
+      lfoDepth.gain.exponentialRampToValueAtTime(0.20, t0 + dur);
       lfo.connect(lfoDepth);
       lfoDepth.connect(trem.gain);
       lfo.start(t0);
       lfo.stop(t0 + dur + 0.02);
 
+      // falling lowpass = the pitch of the rasp dropping away
       var filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
-      filter.Q.value = 7;
-      filter.frequency.setValueAtTime(1500, t0);
-      filter.frequency.exponentialRampToValueAtTime(340, t0 + dur);
+      filter.Q.value = 8;
+      filter.frequency.setValueAtTime(1100, t0);
+      filter.frequency.exponentialRampToValueAtTime(190, t0 + dur);
       filter.connect(trem);
 
-      var osc1 = ctx.createOscillator();
-      osc1.type = 'sawtooth';
-      osc1.frequency.setValueAtTime(base, t0);
-      osc1.frequency.exponentialRampToValueAtTime(base * 0.52, t0 + dur);
+      var voices = [
+        { freq: base, type: 'sawtooth', gain: 0.5 },
+        { freq: base * detune, type: 'sawtooth', gain: 0.34 },
+        { freq: base * 0.5, type: 'sine', gain: 0.42 }
+      ];
+      for (var i = 0; i < voices.length; i++) {
+        var v = voices[i];
+        var osc = ctx.createOscillator();
+        osc.type = v.type;
+        osc.frequency.setValueAtTime(v.freq, t0);
+        osc.frequency.exponentialRampToValueAtTime(Math.max(24, bottom * (v.type === 'sine' ? 0.5 : 1)), t0 + dur);
+        var voiceGain = ctx.createGain();
+        voiceGain.gain.value = v.gain;
+        osc.connect(voiceGain);
+        voiceGain.connect(filter);
+        osc.start(t0);
+        osc.stop(t0 + dur + 0.02);
+      }
 
-      var osc2 = ctx.createOscillator();
-      osc2.type = 'sawtooth';
-      osc2.frequency.setValueAtTime(base * 1.045, t0);
-      osc2.frequency.exponentialRampToValueAtTime(base * 0.5, t0 + dur);
-
-      osc1.connect(filter);
-      osc2.connect(filter);
-      osc1.start(t0);
-      osc1.stop(t0 + dur + 0.02);
-      osc2.start(t0);
-      osc2.stop(t0 + dur + 0.02);
-
-      this._noise({ t0: t0, dur: 0.05, filter: 'bandpass', freq: 1100, q: 1.1, gain: 0.10 });
+      // wet sputter on top
+      this._noise({
+        t0: t0, dur: dur * 0.75, filter: 'bandpass', freq: 620, q: 0.9,
+        gain: 0.22, attack: 0.02
+      });
+      this._noise({ t0: t0 + dur * 0.5, dur: dur * 0.4, filter: 'bandpass', freq: 420, q: 0.8, gain: 0.16 });
     } catch (err) {
       this._fail(err);
     }

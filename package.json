@@ -6,11 +6,19 @@
   "scripts": {
     "test": "node tests/unit.test.js",
     "test:browser": "node tests/browser.test.js",
-    "test:all": "node tests/unit.test.js && node tests/browser.test.js",
+    "test:all": "node tests/unit.test.js && node tests/browser.test.js && node tests/perf.js",
     "screenshots": "node tests/screenshots.js",
-    "serve": "python3 -m http.server 8080"
+    "serve": "python3 -m http.server 8080",
+    "perf": "node tests/perf.js",
+    "perf:firefox": "node tests/firefox-perf.js"
   },
-  "keywords": ["game", "canvas", "arcade", "get-analyst", "web-audio"],
+  "keywords": [
+    "game",
+    "canvas",
+    "arcade",
+    "get-analyst",
+    "web-audio"
+  ],
   "license": "UNLICENSED",
   "engines": {
     "node": ">=18"

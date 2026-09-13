@@ -91,9 +91,8 @@ body {
   overflow: hidden;
   background: #0f1416;
   box-shadow:
-    0 0 0 1px rgba(22, 243, 206, 0.18),
-    0 calc(var(--u) * 18) calc(var(--u) * 50) rgba(0, 0, 0, 0.6),
-    0 0 calc(var(--u) * 70) rgba(22, 243, 206, 0.10);
+    0 0 0 1px rgba(22, 243, 206, 0.20),
+    0 0 calc(var(--u) * 22) rgba(22, 243, 206, 0.08);
   isolation: isolate;
   touch-action: manipulation;
 }
@@ -105,6 +104,9 @@ body {
   height: 100%;
   display: block;
   touch-action: manipulation;
+  /* own compositing layer: a canvas repaint no longer repaints the UI */
+  will-change: transform;
+  contain: strict;
 }
 
 /* ============================ Shared UI ============================ */
@@ -171,7 +173,6 @@ body {
   border: 1px solid var(--ga-line);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  backdrop-filter: blur(calc(var(--u) * 6));
   transition: color 0.2s, border-color 0.2s, background 0.2s, transform 0.14s;
 }
 .icon-btn:hover { color: var(--ga-accent); border-color: var(--ga-accent); transform: translateY(calc(var(--u) * -1)); }
@@ -205,8 +206,7 @@ body {
   pointer-events: none;
   transform: translateY(calc(var(--u) * 8)) scale(0.995);
   transition: opacity 0.28s ease, transform 0.28s ease, visibility 0.28s;
-  background: radial-gradient(120% 80% at 50% 0%, rgba(10, 22, 22, 0.55), rgba(5, 8, 9, 0.82));
-  backdrop-filter: blur(calc(var(--u) * 2));
+  background: radial-gradient(120% 80% at 50% 0%, rgba(10, 22, 22, 0.72), rgba(5, 8, 9, 0.9));
   z-index: 5;
 }
 
@@ -681,8 +681,7 @@ body {
   display: none;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 7, 8, 0.72);
-  backdrop-filter: blur(calc(var(--u) * 3));
+  background: rgba(4, 7, 8, 0.86);
   z-index: 20;
   padding: calc(var(--u) * 20);
 }
