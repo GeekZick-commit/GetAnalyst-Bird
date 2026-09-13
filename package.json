@@ -1,0 +1,18 @@
+{
+  "name": "get-analyst-feather-rush",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Get Analyst: Feather Rush — a small branded browser arcade mini-game (HTML5 Canvas + vanilla JS + Web Audio API).",
+  "scripts": {
+    "test": "node tests/unit.test.js",
+    "test:browser": "node tests/browser.test.js",
+    "test:all": "node tests/unit.test.js && node tests/browser.test.js",
+    "screenshots": "node tests/screenshots.js",
+    "serve": "python3 -m http.server 8080"
+  },
+  "keywords": ["game", "canvas", "arcade", "get-analyst", "web-audio"],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18"
+  }
+}

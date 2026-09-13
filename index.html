@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101314">
+<meta name="description" content="Get Analyst: Feather Rush — a small branded arcade mini-game.">
+<title>Get Analyst: Feather Rush</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='%2316F3CE'/></svg>">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<noscript>
+  <div class="noscript">Get Analyst: Feather Rush needs JavaScript to run. Please enable it and reload.</div>
+</noscript>
+
+<div class="app" id="app">
+  <div class="stage" id="stage">
+    <!-- ============ GAME CANVAS ============ -->
+    <canvas id="game-canvas" class="game-canvas" width="1280" height="720"
+            role="img" aria-label="Feather Rush play area"></canvas>
+
+    <!-- ============ HUD ============ -->
+    <div class="hud" id="hud">
+      <div class="hud__bar">
+        <div class="hud__player">
+          <canvas class="hud__portrait" id="hud-portrait" width="96" height="96" aria-hidden="true"></canvas>
+          <div class="hud__names">
+            <span class="hud__bird" id="hud-bird">SCOUT</span>
+            <span class="hud__nick" id="hud-nick">player</span>
+          </div>
+        </div>
+
+        <div class="hud__stats">
+          <div class="stat">
+            <span class="stat__label">SCORE</span>
+            <span class="stat__value" id="hud-score">0</span>
+          </div>
+          <div class="stat">
+            <span class="stat__label">BEST</span>
+            <span class="stat__value" id="hud-best">0</span>
+          </div>
+          <div class="stat stat--combo">
+            <span class="stat__label">COMBO</span>
+            <span class="stat__value" id="hud-combo">x1</span>
+          </div>
+        </div>
+
+        <div class="hud__right">
+          <div class="lives" id="hud-lives" role="status" aria-label="Lives left"></div>
+          <button class="icon-btn" id="btn-pause" type="button" title="Pause (P / Esc)" aria-label="Pause">❚❚</button>
+          <button class="icon-btn" id="btn-sound" type="button" title="Sound on/off (M)" aria-label="Toggle sound">🔊</button>
+        </div>
+      </div>
+      <div class="combo-banner" id="combo-banner" aria-live="polite"></div>
+    </div>
+
+    <!-- ============ MAIN MENU ============ -->
+    <section class="screen screen--menu" id="screen-menu" aria-label="Main menu">
+      <div class="panel panel--brand">
+        <div class="brand">
+          <svg class="brand__mark" viewBox="0 0 120 120" aria-hidden="true">
+            <g fill="none" stroke="currentColor" stroke-width="13" stroke-linecap="round">
+              <circle cx="40" cy="60" r="31" stroke-dasharray="164 31" transform="rotate(35 40 60)"></circle>
+              <circle cx="80" cy="60" r="31" stroke-dasharray="164 31" transform="rotate(215 80 60)"></circle>
+            </g>
+            <g fill="currentColor">
+              <rect x="34" y="54" width="13" height="13" rx="2.5"></rect>
+              <rect x="73" y="54" width="13" height="13" rx="2.5"></rect>
+            </g>
+          </svg>
+          <h1 class="brand__title">GET ANALYST</h1>
+          <p class="brand__subtitle">Feather Rush</p>
+        </div>
+
+        <div class="menu-grid">
+          <div class="panel__col panel__col--play">
+            <label class="field" for="nickname">
+              <span class="field__label">NICKNAME</span>
+              <input id="nickname" class="field__input" type="text" maxlength="16" placeholder="Enter your nickname"
+                     autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="nickname-hint">
+              <span class="field__hint" id="nickname-hint">2–16 characters: letters, digits, _ or -</span>
+            </label>
+
+            <h2 class="section-title">CHOOSE YOUR BIRD</h2>
+            <div class="bird-cards" id="bird-cards-menu" role="radiogroup" aria-label="Choose your bird"></div>
+
+            <button class="btn btn--primary btn--play" id="btn-play" type="button">PLAY</button>
+            <p class="controls-hint"><b>SPACE</b> / <b>↑</b> / <b>CLICK</b> flap &nbsp;·&nbsp; <b>P</b> pause</p>
+          </div>
+
+          <aside class="panel__col panel__col--scores">
+            <h2 class="section-title">TOP SCORES</h2>
+            <ol class="leaderboard" id="leaderboard-menu"></ol>
+            <div class="row row--split">
+              <button class="btn btn--ghost btn--sm" id="btn-clear-menu" type="button">CLEAR SCORES</button>
+            </div>
+            <div class="sound-toggles">
+              <button class="toggle is-on" id="toggle-music" type="button" aria-pressed="true"><span class="toggle__dot"></span>MUSIC</button>
+              <button class="toggle is-on" id="toggle-sfx" type="button" aria-pressed="true"><span class="toggle__dot"></span>SFX</button>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CHARACTER SELECT ============ -->
+    <section class="screen screen--select" id="screen-select" aria-label="Choose your bird">
+      <div class="panel panel--center">
+        <h2 class="screen__title">CHOOSE YOUR BIRD</h2>
+        <p class="screen__sub" id="select-nick">Player: —</p>
+        <div class="bird-cards bird-cards--wide" id="bird-cards-select" role="radiogroup" aria-label="Choose your bird"></div>
+        <p class="controls-hint">All birds fly at exactly the same speed, hitbox and scoring. Pick the look you like.</p>
+        <div class="row">
+          <button class="btn btn--ghost" id="btn-select-back" type="button">MAIN MENU</button>
+          <button class="btn btn--primary" id="btn-select-play" type="button">PLAY</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PAUSE ============ -->
+    <section class="screen screen--pause" id="screen-pause" aria-label="Paused">
+      <div class="panel panel--center panel--compact">
+        <h2 class="screen__title">PAUSED</h2>
+        <div class="mini-stats" id="pause-stats"></div>
+        <div class="row row--stack">
+          <button class="btn btn--primary" id="btn-resume" type="button">RESUME</button>
+          <button class="btn btn--ghost" id="btn-restart-pause" type="button">RESTART</button>
+          <button class="btn btn--ghost" id="btn-menu-pause" type="button">MAIN MENU</button>
+        </div>
+        <div class="sound-toggles sound-toggles--center">
+          <button class="toggle is-on" id="toggle-music-pause" type="button" aria-pressed="true"><span class="toggle__dot"></span>MUSIC</button>
+          <button class="toggle is-on" id="toggle-sfx-pause" type="button" aria-pressed="true"><span class="toggle__dot"></span>SFX</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ GAME OVER ============ -->
+    <section class="screen screen--gameover" id="screen-gameover" aria-label="Game over">
+      <div class="panel panel--center panel--compact">
+        <h2 class="screen__title screen__title--big" id="go-title">GAME OVER</h2>
+        <p class="high-score" id="go-new-high">🏆 NEW HIGH SCORE!</p>
+        <div class="go-stats">
+          <div class="go-row"><span>Player</span><b id="go-player">—</b></div>
+          <div class="go-row"><span>Bird</span><b id="go-bird">—</b></div>
+          <div class="go-row go-row--score"><span>Score</span><b id="go-score">0</b></div>
+          <div class="go-row"><span>Best Score</span><b id="go-best">0</b></div>
+          <div class="go-row"><span>Worms / Distance</span><b id="go-extra">0 / 0 m</b></div>
+        </div>
+        <div class="row row--stack">
+          <button class="btn btn--primary" id="btn-play-again" type="button">PLAY AGAIN</button>
+          <button class="btn btn--ghost" id="btn-change-bird" type="button">CHANGE BIRD</button>
+          <button class="btn btn--ghost" id="btn-main-menu" type="button">MAIN MENU</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ FLOATING LAYERS ============ -->
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="rotate-hint" id="rotate-hint">↻ Rotate your device for a bigger view</div>
+
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal__box">
+        <h3 class="modal__title" id="modal-title">Are you sure?</h3>
+        <p class="modal__text" id="modal-text"></p>
+        <div class="row">
+          <button class="btn btn--ghost" id="modal-cancel" type="button">CANCEL</button>
+          <button class="btn btn--danger" id="modal-ok" type="button">CONFIRM</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="fatal" id="fatal" role="alert">
+      <div class="fatal__box">
+        <b>Something went wrong.</b>
+        <p id="fatal-text"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SCRIPTS (classic, load order matters) ============ -->
+<script src="js/utils.js"></script>
+<script src="js/config.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/score.js"></script>
+<script src="js/particles.js"></script>
+<script src="js/background.js"></script>
+<script src="js/bird.js"></script>
+<script src="js/worm.js"></script>
+<script src="js/obstacle.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/input.js"></script>
+<script src="js/bird-selector.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/game.js"></script>
+</body>
+</html>
