@@ -25,6 +25,11 @@
   // Adaptive render scale (backing pixels per logical pixel). The canvas is
   // rasterised at exactly this integer-friendly scale and the browser scales
   // the finished surface once, so every internal blit stays 1:1.
+  // Dynamic resolution is a safety net, not an optimiser. Changing the canvas
+  // size reallocates the surface and (in Firefox) rebuilds its compositing
+  // layer, which itself costs a frame - so the controller must almost never
+  // fire. A previous aggressive version oscillated fifteen times in 45 s and
+  // produced exactly the "first two minutes stutter" it was meant to cure.
   var QUALITY = {
     min: 0.6,
     max: 1.5,
@@ -33,13 +38,17 @@
     stepUp: 0.1,
     // Frame intervals are compared, not absolute work time: rAF is quantised by
     // the display refresh, so a 60 Hz screen can never report less than 16.7 ms.
-    dropP90Ms: 28,   // a tenth of the frames are this slow -> too heavy
-    dropP50Ms: 24,   // or the median frame is already below ~42 fps
-    holdP90Ms: 20,   // smooth and near the refresh ceiling -> quality can go up
-    holdP50Ms: 18,
-    windowSec: 0.8,
-    fastWindows: 4,
-    maxSamples: 90
+    dropP90Ms: 30,    // a tenth of the frames slower than this -> genuinely too heavy
+    dropP50Ms: 22,    // and the median is already below ~45 fps
+    holdP90Ms: 17.5,  // pinned to the refresh rate with no drops -> headroom
+    holdP50Ms: 17,
+    windowSec: 1.2,
+    fastWindows: 10,  // ~12 s of flawless frames before giving quality back
+    cooldownSec: 10,  // never resize twice in a row faster than this
+    graceSec: 6,      // ignore start-up warm-up, sample decoding and music render
+    warmupWindows: 3,
+    maxUpgrades: 2,
+    maxSamples: 140
   };
 
   function Game(options) {
@@ -128,7 +137,10 @@
     this._qualityTimer = 0;
     this._frameSamples = [];
     this._fastWindows = 0;
-    this._qualityWarmup = 2;
+    this._qualityWarmup = QUALITY.warmupWindows;
+    this._qualityGrace = QUALITY.graceSec;
+    this._sinceQualityChange = 0;
+    this._upgrades = 0;
     this.ready = false;
     this.readyTime = 0;
     this.showPerf = false;
@@ -269,9 +281,13 @@
     this.trackQuality(rawDt);
 
     try {
-      if (this.state === STATES.PAUSED && !this._forceRender) {
-        // Nothing moves while paused: skip the whole pipeline instead of
-        // burning a full frame render behind a static overlay.
+      // While a DOM overlay covers the stage (menu, character select, pause)
+      // nothing on the canvas moves. Repainting it every frame forced the
+      // browser to re-composite the whole overlay stack each frame, which cost
+      // more than the render itself in software Firefox.
+      var staticScene = this.state === STATES.MENU || this.state === STATES.CHARACTER_SELECT;
+      if ((this.state === STATES.PAUSED || staticScene) && !this._forceRender) {
+        // keep the loop alive, just do not redraw
       } else {
         this.update(dt);
         this.render();
@@ -330,12 +346,13 @@
     this.diff = this.snapDifficulty(0);
     this.background.reset();
     this.ui.setReadyHint(false);
+    this._forceRender = true;
     this.ui.setHudActive(false);
     this.ui.showScreen('menu');
     this.ui.setLives(LIVES.start);
     this.ui.setSelectSubtitle(this.storage.getNickname() || this.ui.getNickname());
     this.refreshLeaderboard();
-    this.startSelectors();
+    this.startSelectors('menu');
     this.audio.setIntensity(1);
   };
 
@@ -343,14 +360,26 @@
     this.state = STATES.CHARACTER_SELECT;
     var nick = this.ui.getNickname() || this.storage.getNickname();
     this.ui.setSelectSubtitle(nick || '—');
+    this._forceRender = true;
     this.ui.showScreen('select');
     this.ui.setHudActive(false);
-    this.startSelectors();
+    this.startSelectors('select');
     this.audio.play('ui_click');
   };
 
-  Game.prototype.startSelectors = function () {
-    for (var i = 0; i < this.selectors.length; i++) { this.selectors[i].start(); this.selectors[i].measure(); }
+  /**
+   * Only the selector on the visible screen animates. Both of them used to run
+   * their rAF loop forever, drawing six preview canvases per frame - including
+   * the hidden character-select screen - which alone cost about half the frame
+   * budget in the menu.
+   */
+  Game.prototype.startSelectors = function (which) {
+    for (var i = 0; i < this.selectors.length; i++) { this.selectors[i].stop(); }
+    var active = which === 'select' ? this.selectSelector : this.menuSelector;
+    if (active && (which === 'select' || which === 'menu' || which == null)) {
+      active.start();
+      active.measure();
+    }
   };
 
   Game.prototype.stopSelectors = function () {
@@ -358,13 +387,14 @@
   };
 
   Game.prototype.startRun = function () {
-    this._qualityWarmup = 2;
+    this._qualityWarmup = QUALITY.warmupWindows;
+    this._qualityGrace = QUALITY.graceSec;
     var check = Utils.validateNickname(this.ui.getNickname());
     if (!check.ok) {
       this.ui.setNicknameError(check.error);
       this.ui.showScreen('menu');
       this.state = STATES.MENU;
-      this.startSelectors();
+      this.startSelectors('menu');
       this.ui.toast(check.error);
       return false;
     }
@@ -395,6 +425,7 @@
     this.ui.showScreen(null);
     this.ui.setNicknameError(null);
     this.ui.setHudActive(true);
+    this.ui.renderPortrait(this.birdDef, this.time);
     this.ui.setReadyHint(true, check.value);
     this.ui.setLives(LIVES.start);
     this.ui.updateHud({
@@ -606,11 +637,6 @@
     this.bird.reset();
     this.bird.updateIdle(dt, WORLD.groundY - 46, this.time);
     this.bird.def = this.birdDef;
-    this.portraitTimer -= dt;
-    if (this.portraitTimer <= 0) {
-      this.ui.renderPortrait(this.birdDef, this.time);
-      this.portraitTimer = this.HUD_PORTRAIT_EVERY;
-    }
   };
 
   Game.prototype.updateGameOver = function (dt) {
@@ -633,11 +659,6 @@
     // Warm-up scene: the world drifts slowly while the player gets ready.
     this.background.update(dt, 90);
     this.bird.updateIdle(dt, WORLD.height * 0.42, this.time);
-    this.portraitTimer -= dt;
-    if (this.portraitTimer <= 0) {
-      this.ui.renderPortrait(this.birdDef, this.time);
-      this.portraitTimer = this.HUD_PORTRAIT_EVERY;
-    }
   };
 
   Game.prototype.updatePlaying = function (dt) {
@@ -784,6 +805,15 @@
   Game.prototype.trackQuality = function (rawDt) {
     if (!this.adaptiveQuality || !this.running) { return; }
     if (!isFinite(rawDt) || rawDt <= 0 || rawDt > 0.5) { return; }
+    // Only judge gameplay, and never during warm-up / sample decoding.
+    if (this._qualityGrace > 0) {
+      this._qualityGrace -= rawDt;
+      this._qualityTimer = 0;
+      this._frameSamples.length = 0;
+      return;
+    }
+    if (this.state !== STATES.PLAYING) { return; }
+    this._sinceQualityChange += rawDt;
     this._qualityTimer += rawDt;
     this._frameSamples.push(rawDt * 1000);
     if (this._frameSamples.length > QUALITY.maxSamples) { this._frameSamples.shift(); }
@@ -798,18 +828,25 @@
     var p50 = sorted[Math.floor(sorted.length * 0.5)];
     var p90 = sorted[Math.floor(sorted.length * 0.9)];
 
+    if (this._sinceQualityChange < QUALITY.cooldownSec) { return; }
+
     if ((p90 > QUALITY.dropP90Ms || p50 > QUALITY.dropP50Ms) && this.renderScale > QUALITY.min + 0.001) {
       this.renderScale = Math.max(QUALITY.min, this.renderScale - QUALITY.stepDown);
       this._fastWindows = 0;
+      this._sinceQualityChange = 0;
       this._qualityWarmup = 1;
       this.resize();
       return;
     }
-    if (p90 <= QUALITY.holdP90Ms && p50 <= QUALITY.holdP50Ms && this.renderScale < this.maxRenderScale - 0.001) {
+    if (p90 <= QUALITY.holdP90Ms && p50 <= QUALITY.holdP50Ms &&
+        this._upgrades < QUALITY.maxUpgrades && this.renderScale < this.maxRenderScale - 0.001) {
       this._fastWindows += 1;
       if (this._fastWindows >= QUALITY.fastWindows) {
         this._fastWindows = 0;
+        this._upgrades += 1;
+        this._sinceQualityChange = 0;
         this.renderScale = Math.min(this.maxRenderScale, this.renderScale + QUALITY.stepUp);
+        this._qualityWarmup = 1;
         this.resize();
       }
       return;

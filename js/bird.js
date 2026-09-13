@@ -247,10 +247,7 @@
     drawTail(ctx, def);
     drawWing(ctx, def, opts.wingAngle || 0, true);
 
-    var grad = ctx.createLinearGradient(0, -20, 0, 22);
-    grad.addColorStop(0, def.body);
-    grad.addColorStop(1, def.bodyDark);
-    ctx.fillStyle = grad;
+    ctx.fillStyle = bodyGradient(ctx, def);
     bodyPath(ctx);
     ctx.fill();
     ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)';
@@ -282,6 +279,39 @@
     ctx.restore();
   }
 
+  // Cached painting helpers: the menu draws several birds per frame and
+  // creating a radial + linear gradient for each of them was measurable.
+  var AURA_CACHE = {};
+  var BODY_GRAD = { ctx: null, id: null, grad: null };
+
+  function bodyGradient(ctx, def) {
+    if (BODY_GRAD.ctx === ctx && BODY_GRAD.id === def.id) { return BODY_GRAD.grad; }
+    var g = ctx.createLinearGradient(0, -20, 0, 22);
+    g.addColorStop(0, def.body);
+    g.addColorStop(1, def.bodyDark);
+    BODY_GRAD.ctx = ctx;
+    BODY_GRAD.id = def.id;
+    BODY_GRAD.grad = g;
+    return g;
+  }
+
+  function auraSprite(def) {
+    if (AURA_CACHE[def.id] !== undefined) { return AURA_CACHE[def.id]; }
+    if (typeof document === 'undefined') { AURA_CACHE[def.id] = null; return null; }
+    var size = 192;
+    var canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    var g = canvas.getContext('2d');
+    var grad = g.createRadialGradient(size / 2, size / 2, 2, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, auraColor(def));
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, size, size);
+    AURA_CACHE[def.id] = canvas;
+    return canvas;
+  }
+
   function auraColor(def) {
     if (def.id === 'scout') { return 'rgba(255, 154, 61, 0.35)'; }
     if (def.id === 'professor') { return 'rgba(108, 124, 255, 0.35)'; }
@@ -297,13 +327,11 @@
     var cy = height * 0.56;
     var bob = Math.sin(time * 2.1 + (def.id === 'professor' ? 1.2 : 0)) * height * 0.035;
 
-    ctx.save();
-    var aura = ctx.createRadialGradient(cx, cy + bob, 2, cx, cy + bob, Math.max(width, height) * 0.52);
-    aura.addColorStop(0, auraColor(def));
-    aura.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = aura;
-    ctx.fillRect(0, 0, width, height);
-    ctx.restore();
+    var sprite = auraSprite(def);
+    if (sprite) {
+      var radius = Math.max(width, height) * 0.62;
+      ctx.drawImage(sprite, cx - radius, cy + bob - radius, radius * 2, radius * 2);
+    }
 
     if (def.id === 'cyber') {
       ctx.save();
@@ -396,6 +424,7 @@
     var hitGround = false, hitCeiling = false;
     if (this.y < r) { this.y = r; if (this.vy < 0) { this.vy = 0; } hitCeiling = true; }
     if (this.y > groundY - r) { this.y = groundY - r; if (this.vy > 0) { this.vy = 0; } hitGround = true; }
+    var flags = this._flags || (this._flags = { hitGround: false, hitCeiling: false });
 
     var t = Utils.clamp(this.vy / 720, -1, 1);
     var target = t < 0 ? -t * FLIGHT.tiltUp : t * FLIGHT.tiltDown;
@@ -407,7 +436,9 @@
     if (this.invulnerable > 0) { this.invulnerable = Math.max(0, this.invulnerable - dt); }
     if (this.hitFlash > 0) { this.hitFlash = Math.max(0, this.hitFlash - dt * 1.6); }
 
-    return { hitGround: hitGround, hitCeiling: hitCeiling };
+    flags.hitGround = hitGround;
+    flags.hitCeiling = hitCeiling;
+    return flags;
   };
 
   /** Gentle hover used by the menu screens. */

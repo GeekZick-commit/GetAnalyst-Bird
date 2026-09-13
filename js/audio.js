@@ -47,6 +47,10 @@
     this._nextTime = 0;
     this._bpm = 98;
     this._lastError = null;
+    // user-provided flap sample (js/fart-sample.js); the synth is the fallback
+    this._flapSample = null;
+    this._flapSampleLoading = false;
+    this._flapSampleFailed = false;
     // pre-rendered music loops (see _renderMusicLoops)
     this._loops = { calm: null, full: null };
     this._loopsBaked = false;
@@ -109,7 +113,9 @@
         if (p && typeof p.then === 'function') { p.then(function () {}, function () {}); }
       }
       this.unlocked = true;
-      // Render the soundtrack in the background while the player is in the menu.
+      // Decode the flap sample and render the soundtrack in the background
+      // while the player is still in the menu.
+      this._decodeFlapSample();
       this._renderMusicLoops();
     } catch (err) {
       this._fail(err);
@@ -129,7 +135,11 @@
   };
 
   AudioManager.prototype.setIntensity = function (level) {
-    this.intensity = Utils.clamp(level || 1, 1, 6);
+    var next = Utils.clamp(level || 1, 1, 6);
+    // Called every frame: without this guard each call would queue four
+    // AudioParam automation events per frame and grow the timeline forever.
+    if (next === this.intensity) { return; }
+    this.intensity = next;
     this._bpm = BASE_BPM + (this.intensity - 1) * 4.5; // subtle acceleration with difficulty
     this._applyLoopMix(false);
   };
@@ -307,11 +317,79 @@
     }
   };
 
+  /* ------------------------- flap sample ------------------------- */
+
+  AudioManager.prototype._decodeFlapSample = function () {
+    if (this._flapSample || this._flapSampleLoading || this._flapSampleFailed) { return; }
+    var ctx = this.ctx;
+    var uri = (root.GA && root.GA.FART_SAMPLE) || null;
+    if (!ctx || !uri || typeof atob !== 'function' || typeof Uint8Array === 'undefined') {
+      this._flapSampleFailed = true;
+      return;
+    }
+
+    var self = this;
+    var settled = false;
+    this._flapSampleLoading = true;
+
+    function ok(buffer) {
+      if (settled) { return; }
+      settled = true;
+      self._flapSample = buffer;
+      self._flapSampleLoading = false;
+    }
+    function fail() {
+      if (settled) { return; }
+      settled = true;
+      self._flapSampleFailed = true;
+      self._flapSampleLoading = false;
+    }
+
+    try {
+      var base64 = uri.slice(uri.indexOf(',') + 1);
+      var binary = atob(base64);
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) { bytes[i] = binary.charCodeAt(i); }
+
+      var maybePromise = null;
+      try {
+        maybePromise = ctx.decodeAudioData(bytes.buffer, ok, fail);
+      } catch (inner) {
+        // very old signature: decodeAudioData(buffer) only
+        maybePromise = ctx.decodeAudioData(bytes.buffer);
+      }
+      if (maybePromise && typeof maybePromise.then === 'function') {
+        maybePromise.then(ok, fail);
+      }
+    } catch (err) {
+      fail();
+    }
+  };
+
+  /** Plays the recorded fart; falls back to the synthesised one. */
+  AudioManager.prototype._playFlap = function () {
+    var ctx = this.ctx;
+    var buffer = this._flapSample;
+    if (!ctx || !buffer) { this._fart(); return; }
+    try {
+      var src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.playbackRate.value = 0.93 + Math.random() * 0.15; // keeps repeats from sounding identical
+      var gain = ctx.createGain();
+      gain.gain.value = 0.95;
+      src.connect(gain);
+      gain.connect(this.sfxGain);
+      src.start();
+    } catch (err) {
+      this._fart();
+    }
+  };
+
   /* ------------------------- SFX library ------------------------- */
 
   var SFX = {
-    // the flap is deliberately a short, small fart (see _fart)
-    flap: function (a) { a._fart(); },
+    // the flap is the recorded fart sample, with the synth as a fallback
+    flap: function (a) { a._playFlap(); },
     worm_green: function (a) { a._seq([NOTES.E5, NOTES.G5], { step: 0.055, dur: 0.12, gain: 0.2 }); },
     worm_blue: function (a) { a._seq([NOTES.G4, NOTES.B4, NOTES.E5], { step: 0.05, dur: 0.13, gain: 0.22, type: 'sine' }); },
     worm_purple: function (a) { a._seq([NOTES.A4, NOTES.C5, NOTES.E5, NOTES.A5], { step: 0.048, dur: 0.15, gain: 0.24, type: 'sine' }); },
@@ -486,7 +564,9 @@
     if (!OAC || !this.ctx) { return; }
 
     var self = this;
-    var sampleRate = this.ctx.sampleRate;
+    // Render the loop at 22 kHz: everything in this soundtrack lives below
+    // 8 kHz, and halving the sample rate halves the render time and memory.
+    var sampleRate = Math.min(22050, this.ctx.sampleRate);
     var beat = 60 / BASE_BPM / 4;
     var steps = MUSIC_BARS * STEPS_PER_BAR;
     var duration = steps * beat + 0.05;

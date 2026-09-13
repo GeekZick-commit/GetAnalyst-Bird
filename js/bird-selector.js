@@ -112,11 +112,12 @@
   BirdSelector.prototype.tick = function (now) {
     if (!this._running) { return; }
     var self = this;
-    var t = now / 1000;
-    var dt = Math.min(0.05, t - this.time);
-    this.time = t;
-    if (dt < 0) { this.time = t; }
-    this.render();
+    this.time = now / 1000;
+    // The cards are idle decorations: 30 fps is plenty and halves the cost.
+    if (now - (this._lastRender || 0) >= 32) {
+      this._lastRender = now;
+      this.render();
+    }
     this._raf = (typeof requestAnimationFrame === 'function')
       ? requestAnimationFrame(function (n) { self.tick(n); })
       : null;

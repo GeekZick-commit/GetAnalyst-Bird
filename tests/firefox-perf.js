@@ -146,6 +146,76 @@ var timer = setInterval(function () {
 }, 16);
 `;
 
+const SOAK = `
+var g = window.__GA_GAME__;
+var done = arguments[arguments.length - 1];
+var totalSec = SECONDS;
+var mode = 'MODE';
+g.storage.clearAll();
+if (mode === 'idle') {
+  // control run: no game loop at all, only this sampler runs
+  g.stop();
+} else if (mode === 'menu') {
+  // game loop running, but only the menu screen is drawn
+} else {
+  var nk = document.getElementById('nickname');
+  nk.value = 'Soak'; nk.dispatchEvent(new Event('input', { bubbles: true }));
+  document.getElementById('btn-play').click();
+  if (g.ready) { g.beginRun(); }
+}
+
+// keep the bird alive so the run keeps getting busier
+var autopilot = setInterval(function () {
+  if (mode !== 'play' || g.state !== 'PLAYING' || g.ready) { return; }
+  var target = null;
+  for (var i = 0; i < g.obstacles.pairs.length; i++) {
+    var p = g.obstacles.pairs[i];
+    if (p.x + p.width > g.bird.x - 20 && (!target || p.x < target.x)) { target = p; }
+  }
+  if (target && g.bird.y > target.getGapCenter() - 8 && g.bird.vy > -80) { g.onFlap(); }
+}, 50);
+
+var samples = [], scaleChanges = [];
+var frames = 0, longFrames = 0, maxFrame = 0;
+var lastSecond = performance.now(), lastFrame = performance.now(), t0 = lastFrame;
+var lastScale = g.renderScale, lastBaked = false;
+
+function loop(ts) {
+  frames++;
+  var dt = ts - lastFrame;
+  lastFrame = ts;
+  if (dt > maxFrame) { maxFrame = dt; }
+  if (dt > 33) { longFrames++; }
+  if (ts - lastSecond >= 1000) {
+    var t = Math.round((ts - t0) / 1000);
+    samples.push({
+      t: t, fps: frames, long: longFrames, maxMs: Math.round(maxFrame),
+      scale: Math.round(g.renderScale * 100) / 100,
+      fx: g.particles.count(), worms: g.worms.count(), walls: g.obstacles.count(),
+      score: g.score.score, lives: g.lives, baked: g.audio._loopsBaked
+    });
+    if (g.renderScale !== lastScale) {
+      scaleChanges.push({ t: t, from: Math.round(lastScale * 100) / 100, to: Math.round(g.renderScale * 100) / 100 });
+      lastScale = g.renderScale;
+    }
+    if (g.audio._loopsBaked !== lastBaked) {
+      scaleChanges.push({ t: t, note: 'music loops ready: ' + g.audio._loopsBaked });
+      lastBaked = g.audio._loopsBaked;
+    }
+    frames = 0; longFrames = 0; maxFrame = 0; lastSecond = ts;
+  }
+  if (ts - t0 < totalSec * 1000) { requestAnimationFrame(loop); }
+  else { clearInterval(autopilot); done({ samples: samples, events: scaleChanges }); }
+}
+requestAnimationFrame(loop);
+`;
+
+async function soak(url, seconds) {
+  const serverless = null;
+  void serverless;
+  return seconds;
+}
+
 async function main() {
   const server = await startServer();
   const url = `http://127.0.0.1:${server.address().port}/index.html`;
@@ -183,6 +253,32 @@ async function main() {
 
     await request('POST', `http://127.0.0.1:${WD_PORT}/session/${sessionId}/url`, { url });
     await sleep(2500);
+
+    const soakSeconds = Number(process.env.SOAK_SECONDS || 0);
+    if (soakSeconds > 0) {
+      await request('POST', `http://127.0.0.1:${WD_PORT}/session/${sessionId}/timeouts`, {
+        script: (soakSeconds + 60) * 1000, pageLoad: 60000, implicit: 0
+      });
+      const run = await request('POST', `http://127.0.0.1:${WD_PORT}/session/${sessionId}/execute/async`, {
+        script: SOAK.replace('SECONDS', String(soakSeconds)).replace('MODE', process.env.SOAK_MODE || 'play'), args: []
+      });
+      if (run.status !== 200) { throw new Error('soak failed: ' + JSON.stringify(run.body).slice(0, 400)); }
+      const out = run.body.value;
+      console.log('soak: ' + soakSeconds + 's in Firefox, mode=' + (process.env.SOAK_MODE || 'play'));
+      console.log('  t  fps  >33ms  maxms  scale  fx  worms  walls  score');
+      let slowSeconds = 0;
+      out.samples.forEach(function (sm) {
+        if (sm.fps < 55) { slowSeconds++; }
+        console.log('  ' + String(sm.t).padStart(3) + '  ' + String(sm.fps).padStart(3) + '   ' +
+          String(sm.long).padStart(3) + '   ' + String(sm.maxMs).padStart(4) + '   ' +
+          sm.scale.toFixed(2) + '  ' + String(sm.fx).padStart(3) + '   ' + String(sm.worms).padStart(3) +
+          '    ' + String(sm.walls).padStart(3) + '  ' + String(sm.score).padStart(5) +
+          (sm.baked ? '  [music ready]' : ''));
+      });
+      console.log('  events: ' + JSON.stringify(out.events));
+      console.log('  seconds below 55 fps: ' + slowSeconds + '/' + out.samples.length);
+      return 0;
+    }
 
     const exec = await request('POST', `http://127.0.0.1:${WD_PORT}/session/${sessionId}/execute/async`, {
       script: BENCH, args: []

@@ -29,6 +29,46 @@
     'fatal', 'fatal-text', 'game-canvas'
   ];
 
+  // Keyframe tables for the Web Animations API. Restarting a CSS animation by
+  // removing a class, reading offsetWidth and adding it back forces a
+  // synchronous layout; these used to run several times per second while
+  // playing, which showed up as periodic frame drops.
+  var SCORE_BUMP = [
+    { transform: 'scale(1)', color: '#ffffff' },
+    { transform: 'scale(1.22)', color: '#16F3CE', offset: 0.4 },
+    { transform: 'scale(1)', color: '#ffffff' }
+  ];
+  var HEART_HIT = [
+    { transform: 'scale(1.5) rotate(-8deg)' },
+    { transform: 'scale(0.85) rotate(6deg)', offset: 0.4 },
+    { transform: 'scale(1) rotate(0deg)' }
+  ];
+  var COMBO_POP = [
+    { opacity: 0, transform: 'translate(-50%, -50%) scale(0.5) rotate(-4deg)' },
+    { opacity: 1, transform: 'translate(-50%, -50%) scale(1.12) rotate(2deg)', offset: 0.22 },
+    { opacity: 1, transform: 'translate(-50%, -50%) scale(1)', offset: 0.4 },
+    { opacity: 0, transform: 'translate(-50%, -62%) scale(1)' }
+  ];
+  var SHAKE_KEYFRAMES = [
+    { transform: 'translateX(0)' },
+    { transform: 'translateX(-2px)', offset: 0.1 },
+    { transform: 'translateX(4px)', offset: 0.2 },
+    { transform: 'translateX(-6px)', offset: 0.3 },
+    { transform: 'translateX(6px)', offset: 0.4 },
+    { transform: 'translateX(-6px)', offset: 0.5 },
+    { transform: 'translateX(6px)', offset: 0.6 },
+    { transform: 'translateX(-6px)', offset: 0.7 },
+    { transform: 'translateX(4px)', offset: 0.8 },
+    { transform: 'translateX(-2px)', offset: 0.9 },
+    { transform: 'translateX(0)' }
+  ];
+
+  function bumpElement(el, keyframes) {
+    if (!el) { return; }
+    if (typeof el.animate !== 'function') { return; }
+    el.animate(keyframes, { duration: 320, easing: 'ease-out' });
+  }
+
   var SCREENS = {
     menu: 'screen-menu',
     select: 'screen-select',
@@ -208,12 +248,7 @@
       var heart = this.hearts[i];
       var isLost = i >= lives;
       heart.classList.toggle('is-lost', isLost);
-      if (i === lostIndex) {
-        heart.classList.remove('is-hit');
-        // restart the animation
-        void heart.offsetWidth;
-        heart.classList.add('is-hit');
-      }
+      if (i === lostIndex) { bumpElement(heart, HEART_HIT); }
     }
     this._lastHearts = lives;
   };
@@ -222,11 +257,7 @@
     var el = this.el;
     if (el['hud-score']) {
       el['hud-score'].textContent = Utils.formatScore(state.score);
-      if (state.bumpScore) {
-        el['hud-score'].classList.remove('is-bump');
-        void el['hud-score'].offsetWidth;
-        el['hud-score'].classList.add('is-bump');
-      }
+      if (state.bumpScore) { bumpElement(el['hud-score'], SCORE_BUMP); }
     }
     if (el['hud-best']) { el['hud-best'].textContent = Utils.formatScore(state.best); }
     if (el['hud-combo']) { el['hud-combo'].textContent = 'x' + (state.multiplier || 1); }
@@ -253,9 +284,12 @@
     var banner = this.el['combo-banner'];
     if (!banner) { return; }
     banner.textContent = 'COMBO x' + multiplier + '!';
-    banner.classList.remove('is-showing');
-    void banner.offsetWidth;
-    banner.classList.add('is-showing');
+    if (typeof banner.animate !== 'function') {
+      banner.classList.remove('is-showing');
+      banner.classList.add('is-showing');
+      return;
+    }
+    banner.animate(COMBO_POP, { duration: 1100, easing: 'ease-out' });
   };
 
   UIManager.prototype.setReadyHint = function (visible, nickname) {
@@ -467,8 +501,10 @@
   UIManager.prototype.shake = function () {
     var stage = this.el.stage;
     if (!stage) { return; }
-    stage.classList.remove('is-shaking');
-    void stage.offsetWidth;
+    if (typeof stage.animate === 'function') {
+      stage.animate(SHAKE_KEYFRAMES, { duration: 340, easing: 'cubic-bezier(0.36, 0.07, 0.19, 0.97)' });
+      return;
+    }
     stage.classList.add('is-shaking');
   };
 
@@ -476,8 +512,12 @@
     var stage = this.el.stage;
     if (!stage) { return; }
     stage.classList.remove('is-flashing');
-    void stage.offsetWidth;
-    stage.classList.add('is-flashing');
+    // restart without a synchronous layout flush
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(function () { stage.classList.add('is-flashing'); });
+    } else {
+      stage.classList.add('is-flashing');
+    }
   };
 
   UIManager.birdName = birdName;

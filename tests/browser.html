@@ -334,7 +334,12 @@
     g.worms.spawn(GA.typeById('green'), g.bird.x, g.bird.y);
     await frames(2);
     checkEqual('combo reaches x2 after three worms', g.score.multiplier, 2);
-    check('combo banner is shown', doc.getElementById('combo-banner').classList.contains('is-showing'));
+    var comboEl = doc.getElementById('combo-banner');
+    check('combo banner is shown', comboEl.textContent === 'COMBO x2!' &&
+      (!comboEl.getAnimations || comboEl.getAnimations().length > 0),
+      'text=' + comboEl.textContent + ' animations=' + (comboEl.getAnimations ? comboEl.getAnimations().length : 'n/a'));
+    check('combo banner animates without forcing layout',
+      typeof comboEl.animate === 'function' && !comboEl.classList.contains('is-showing'));
     checkEqual('HUD combo shows x2', doc.getElementById('hud-combo').textContent, 'x2');
 
     var scoreBeforeBlue = g.score.score;
@@ -592,7 +597,29 @@
       check('music stops cleanly', !g.audio._loopNodes && g.audio.isMusicPlaying() === false);
     }
 
-    /* ---------------- the flap is a tiny fart ---------------- */
+    /* ---------------- recorded flap sample ---------------- */
+    g.audio.unlock();
+    await waitFor(function () { return g.audio._flapSample || g.audio._flapSampleFailed; }, 12000, 'flap sample decode');
+    check('the recorded fart sample decodes', !!g.audio._flapSample,
+      'decodeFailed=' + g.audio._flapSampleFailed);
+    if (g.audio._flapSample) {
+      var sampleData = g.audio._flapSample.getChannelData(0);
+      var samplePeak = 0;
+      for (var sdi = 0; sdi < sampleData.length; sdi++) {
+        var absv = Math.abs(sampleData[sdi]);
+        if (absv > samplePeak) { samplePeak = absv; }
+      }
+      check('the sample is normalised and loud', samplePeak > 0.5, 'peak=' + samplePeak.toFixed(3));
+      check('the sample is a short burst', g.audio._flapSample.duration > 0.1 && g.audio._flapSample.duration < 0.4,
+        'duration=' + g.audio._flapSample.duration.toFixed(3) + 's');
+      checkEqual('the sample is mono', g.audio._flapSample.numberOfChannels, 1);
+      note('flap sample', 'duration ' + g.audio._flapSample.duration.toFixed(3) + ' s, peak ' +
+        samplePeak.toFixed(3) + ', ' + g.audio._flapSample.sampleRate + ' Hz');
+      g.applySoundSettings({ music: false, sfx: true });
+      checkEqual('the flap plays the recorded sample', g.audio.play('flap'), true);
+    }
+
+    /* ---------------- the synthesised fart stays as a fallback ---------------- */
     var fart = await measureSound('_fart');
     if (fart.skipped) {
       note('offline audio unavailable, fart not measured', 'skipped');
